@@ -171,6 +171,8 @@ const geminiMaxOutputTokens =
     : 0;
 const ideationAssetDirFromEnv = readEnv("IDEATION_ASSET_DIR");
 const favoritesDirFromEnv = readEnv("FAVORITES_DIR");
+const appStoreProviderFromEnv = readEnv("APP_STORE_PROVIDER")?.toLowerCase();
+const appStoreProvider = appStoreProviderFromEnv === "postgres" ? "postgres" : "memory";
 const favoritesProviderFromEnv = readEnv("FAVORITES_PROVIDER")?.toLowerCase();
 const favoritesProvider = favoritesProviderFromEnv === "postgres" ? "postgres" : "local";
 const postgresUrlFromEnv = readEnv("POSTGRES_URL");
@@ -249,6 +251,7 @@ export const config = {
   geminiMaxOutputTokens,
   ideationAssetDir: ideationAssetDirFromEnv ?? defaultIdeationAssetDir,
   favoritesDir: favoritesDirFromEnv ?? defaultFavoritesDir,
+  appStoreProvider,
   favoritesProvider,
   postgresUrl: postgresUrlFromEnv,
   postgresSsl,

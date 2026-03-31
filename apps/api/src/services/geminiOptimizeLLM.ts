@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProxyAgent } from "undici";
@@ -8,7 +8,7 @@ import { buildOptimizeSystemPrompt } from "./promptTemplates.js";
 
 interface OptimizeAssetInput {
   mimeType: string;
-  storagePath: string;
+  dataBase64: string;
 }
 
 export interface GeminiOptimizeRequest {
@@ -302,6 +302,28 @@ async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPar
   }
 }
 
+function extensionFromVideoMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("webm")) return ".webm";
+  if (normalized.includes("quicktime")) return ".mov";
+  if (normalized.includes("mp4")) return ".mp4";
+  return ".video";
+}
+
+async function extractVideoFramesAsPartsFromBase64(
+  mimeType: string,
+  dataBase64: string,
+): Promise<GeminiPart[]> {
+  const tempDir = mkdtempSync(join(tmpdir(), "shader-optimize-video-input-"));
+  const inputPath = join(tempDir, `input${extensionFromVideoMimeType(mimeType)}`);
+  try {
+    writeFileSync(inputPath, Buffer.from(dataBase64, "base64"));
+    return await extractVideoFramesAsParts(inputPath);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function parseImageDataUrl(dataUrl: string): { mimeType: string; base64: string } {
   const match = dataUrl.trim().match(/^data:(image\/[^;,]+);base64,(.+)$/i);
   if (!match) {
@@ -364,7 +386,10 @@ export async function runGeminiOptimize(
 
   if (request.ideationAsset) {
     if (isVideoMimeType(request.ideationAsset.mimeType)) {
-      const frameParts = await extractVideoFramesAsParts(request.ideationAsset.storagePath);
+      const frameParts = await extractVideoFramesAsPartsFromBase64(
+        request.ideationAsset.mimeType,
+        request.ideationAsset.dataBase64,
+      );
       userParts.push({
         text: `补充参考：需求提炼素材是视频，已自动抽取 ${frameParts.length} 帧。`,
       });
@@ -376,7 +401,7 @@ export async function runGeminiOptimize(
       userParts.push({
         inline_data: {
           mime_type: request.ideationAsset.mimeType,
-          data: readFileSync(request.ideationAsset.storagePath).toString("base64"),
+          data: request.ideationAsset.dataBase64,
         },
       });
     }

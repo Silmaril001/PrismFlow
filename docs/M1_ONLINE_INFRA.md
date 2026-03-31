@@ -4,18 +4,18 @@ This document covers milestone **M1** only:
 
 - static frontend hosting
 - containerized API deployment
-- persistent favorites storage via PostgreSQL + object storage (optional provider switch)
-
-It does **not** include M2 full entity migration or M3 public-square rule changes.
+- persistent app data via PostgreSQL + optional object storage
 
 ## 1) Architecture (M1)
 
 - Web (`apps/web`): static hosting (Vercel / Netlify / Cloudflare Pages).
 - API (`apps/api`): container runtime with Node.js + ffmpeg support.
 - Persistence:
-  - `FAVORITES_PROVIDER=local`: existing filesystem behavior.
-  - `FAVORITES_PROVIDER=postgres`: favorites moved to PostgreSQL.
-  - `OBJECT_STORAGE_PROVIDER=s3`: cover image uploaded to S3-compatible object storage.
+  - `APP_STORE_PROVIDER=memory`: session/revision/artifact/ideation in memory.
+  - `APP_STORE_PROVIDER=postgres`: session/revision/artifact/ideation in PostgreSQL.
+  - `FAVORITES_PROVIDER=local`: favorites remain filesystem-based.
+  - `FAVORITES_PROVIDER=postgres`: favorites in PostgreSQL.
+  - `OBJECT_STORAGE_PROVIDER=s3`: favorite cover image uploaded to S3-compatible object storage.
 
 ## 2) Frontend Hosting
 
@@ -65,6 +65,7 @@ Health endpoints:
 Add these to production API secrets:
 
 ```env
+APP_STORE_PROVIDER=postgres
 FAVORITES_PROVIDER=postgres
 POSTGRES_URL=postgres://user:pass@host:5432/dbname
 POSTGRES_SSL=true
@@ -83,6 +84,8 @@ S3_KEY_PREFIX=prismflow
 
 Notes:
 
+- If `APP_STORE_PROVIDER=postgres`, app restarts will not lose session/revision/artifact/ideation records.
+- Ideation asset payload is persisted in PostgreSQL (`data_base64`) instead of local persistent files.
 - If `OBJECT_STORAGE_PROVIDER=none`, favorites keep inline `data:image/*` cover.
 - If `OBJECT_STORAGE_PROVIDER=s3`, favorites cover image is uploaded and persisted as URL.
 
@@ -93,10 +96,14 @@ Notes:
 2. Start API and verify:
    - `/health` returns `ok: true`
    - `/ready` returns `ok: true`
-3. Smoke test favorites flow:
+3. Smoke test core API flow:
    - create session
    - generate shader
+   - query latest revision
+   - export revision
+4. Smoke test ideation/favorite flow:
+   - send ideation asset message (or verify ideation state after asset binding)
    - create favorite
    - list favorites
    - fetch favorite detail
-4. Restart API and recheck favorites persistence (when postgres provider is enabled).
+5. Restart API and recheck persistence when using PostgreSQL providers.

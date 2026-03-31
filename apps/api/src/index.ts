@@ -1,8 +1,7 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, extname } from "node:path";
 import { z } from "zod";
 import { config } from "./config.js";
 import type { LlmChannel, Mode } from "./models.js";
@@ -16,13 +15,13 @@ import {
 import { buildLinkedReferenceDataUrls, runGeminiIdeation } from "./services/geminiIdeationLLM.js";
 import { nameFavoriteFromGemini } from "./services/geminiFavoriteNamer.js";
 import { runGeminiOptimize } from "./services/geminiOptimizeLLM.js";
-import { InMemoryStore } from "./store.js";
+import { createAppStoreFromConfig } from "./store.js";
 
 const app = Fastify({
   logger: true,
   bodyLimit: 64 * 1024 * 1024,
 });
-const store = new InMemoryStore();
+const appStore = await createAppStoreFromConfig();
 const orchestrator = new PipelineOrchestrator([
   new ShaderPipeline(),
   new PbrPipeline(),
@@ -220,14 +219,14 @@ function hashBuffer(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function resolveParentRevision(
+async function resolveParentRevision(
   sessionId: string,
   parentRevisionId?: string,
 ) {
   const parentRevision =
     parentRevisionId && parentRevisionId.trim().length > 0
-      ? store.getRevision(parentRevisionId.trim())
-      : store.getLatestRevisionBySession(sessionId);
+      ? await appStore.getRevision(parentRevisionId.trim())
+      : await appStore.getLatestRevisionBySession(sessionId);
   return parentRevision;
 }
 
@@ -236,19 +235,27 @@ await app.register(cors, {
 });
 
 app.addHook("onClose", async () => {
+  await appStore.close();
   await favoritesStore.close();
 });
 
 app.get("/health", async () => {
-  return { ok: true, service: "shader-mvp-api", favoritesProvider: favoritesStore.provider };
+  return {
+    ok: true,
+    service: "shader-mvp-api",
+    appStoreProvider: appStore.provider,
+    favoritesProvider: favoritesStore.provider,
+  };
 });
 
 app.get("/ready", async (_request, reply) => {
+  const appStoreHealth = await appStore.healthCheck();
   const favorites = await favoritesStore.healthCheck();
-  const ok = favorites.ok;
+  const ok = appStoreHealth.ok && favorites.ok;
   return reply.status(ok ? 200 : 503).send({
     ok,
     checks: {
+      appStore: appStoreHealth,
       favorites,
     },
   });
@@ -260,7 +267,7 @@ app.post("/v1/sessions", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.createSession(parsed.data.mode, parsed.data.projectId);
+  const session = await appStore.createSession(parsed.data.mode, parsed.data.projectId);
   return reply.send({ session });
 });
 
@@ -272,27 +279,18 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
   if (parsed.data.startNewShader) {
-    const { asset } = store.resetIdeation(session.id);
-    if (asset?.storagePath) {
-      try {
-        unlinkSync(asset.storagePath);
-        const sessionDir = join(config.ideationAssetDir, session.id);
-        rmSync(sessionDir, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup.
-      }
-    }
+    await appStore.resetIdeation(session.id);
   }
 
-  const latestRevision = store.getLatestRevisionBySession(session.id);
+  const latestRevision = await appStore.getLatestRevisionBySession(session.id);
   const storedLatestCode = latestRevision
-    ? store.getArtifactByRevisionAndKind(latestRevision.id, "glsl_fragment")?.content
+    ? (await appStore.getArtifactByRevisionAndKind(latestRevision.id, "glsl_fragment"))?.content
     : undefined;
   const latestCode =
     parsed.data.currentCode && parsed.data.currentCode.trim().length > 0
@@ -338,7 +336,7 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
         ? parsed.data.content
         : `[image-only request, refs=${referenceImageDataUrls.length}]`;
 
-    const revision = store.createRevision({
+    const revision = await appStore.createRevision({
       sessionId: session.id,
       parentRevisionId: useIteration ? (latestRevision?.id ?? null) : null,
       prompt: promptText,
@@ -351,7 +349,7 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
       compileErrors: pipelineResult.compileErrors,
     });
 
-    const artifact = store.createArtifact({
+    const artifact = await appStore.createArtifact({
       revisionId: revision.id,
       kind: "glsl_fragment",
       content: pipelineResult.code,
@@ -384,19 +382,22 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
 
 app.get("/v1/sessions/:id/ideation/state", async (request, reply) => {
   const sessionId = (request.params as { id: string }).id;
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const messages = store.listIdeationMessages(session.id);
-  const asset = store.getIdeationAsset(session.id);
+  const messages = await appStore.listIdeationMessages(session.id);
+  const asset = await appStore.getIdeationAsset(session.id);
+  const assetPayload = asset
+    ? await appStore.getIdeationAssetPayload(session.id)
+    : undefined;
   let linkedReferenceImages: string[] = [];
-  if (asset) {
+  if (asset && assetPayload) {
     try {
       linkedReferenceImages = await buildLinkedReferenceDataUrls({
         mimeType: asset.mimeType,
-        storagePath: asset.storagePath,
+        dataBase64: assetPayload.dataBase64,
       });
     } catch (error) {
       request.log.warn({ err: error }, "Failed to build linked references for ideation state");
@@ -425,19 +426,29 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const existingAsset = store.getIdeationAsset(session.id);
+  const existingAsset = await appStore.getIdeationAsset(session.id);
+  const existingAssetPayload = existingAsset
+    ? await appStore.getIdeationAssetPayload(session.id)
+    : undefined;
   let assetForInference = existingAsset;
+  let assetPayloadForInference = existingAssetPayload;
 
   if (parsed.data.asset) {
     try {
       const parsedAsset = parseUploadedAsset(parsed.data.asset);
+      const parsedAssetBase64 = parsedAsset.bytes.toString("base64");
       if (existingAsset) {
-        const existingBytes = readFileSync(existingAsset.storagePath);
+        if (!existingAssetPayload) {
+          return reply.status(500).send({
+            error: "Ideation asset payload is missing. Please click 新 Shader and retry.",
+          });
+        }
+        const existingBytes = Buffer.from(existingAssetPayload.dataBase64, "base64");
         const sameAsset =
           existingAsset.kind === parsedAsset.kind &&
           existingAsset.mimeType === parsedAsset.mimeType &&
@@ -449,21 +460,20 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
           });
         }
         assetForInference = existingAsset;
+        assetPayloadForInference = existingAssetPayload;
       } else {
-        const sessionDir = join(config.ideationAssetDir, session.id);
-        mkdirSync(sessionDir, { recursive: true });
-        const storagePath = join(
-          sessionDir,
-          `${Date.now()}-${randomUUID().slice(0, 8)}${parsedAsset.extension}`,
-        );
-        writeFileSync(storagePath, parsedAsset.bytes);
-        assetForInference = store.setIdeationAsset(session.id, {
+        assetForInference = await appStore.setIdeationAsset(session.id, {
           kind: parsedAsset.kind,
           fileName: parsedAsset.safeFileName,
           mimeType: parsedAsset.mimeType,
           bytes: parsedAsset.bytes.length,
-          storagePath,
+          dataBase64: parsedAssetBase64,
         });
+        assetPayloadForInference = {
+          kind: parsedAsset.kind,
+          mimeType: parsedAsset.mimeType,
+          dataBase64: parsedAssetBase64,
+        };
       }
     } catch (error) {
       return reply.status(400).send({
@@ -472,37 +482,37 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
     }
   }
 
-  const previousMessages = store.listIdeationMessages(session.id);
+  const previousMessages = await appStore.listIdeationMessages(session.id);
   const userText = parsed.data.content.trim().length > 0 ? parsed.data.content.trim() : "请分析刚上传的素材并给出可用于 GLSL 生成的专业提示词。";
 
   try {
     const ideation = await runGeminiIdeation({
       userMessage: userText,
       history: previousMessages.map((item) => ({ role: item.role, text: item.text })),
-      asset: assetForInference
+      asset: assetForInference && assetPayloadForInference
         ? {
             mimeType: assetForInference.mimeType,
-            storagePath: assetForInference.storagePath,
+            dataBase64: assetPayloadForInference.dataBase64,
           }
         : undefined,
     });
     let linkedReferenceImages: string[] = [];
-    if (assetForInference) {
+    if (assetForInference && assetPayloadForInference) {
       try {
         linkedReferenceImages = await buildLinkedReferenceDataUrls({
           mimeType: assetForInference.mimeType,
-          storagePath: assetForInference.storagePath,
+          dataBase64: assetPayloadForInference.dataBase64,
         });
       } catch (error) {
         request.log.warn({ err: error }, "Failed to build linked references for ideation message");
       }
     }
 
-    const userMessage = store.appendIdeationMessage(session.id, {
+    const userMessage = await appStore.appendIdeationMessage(session.id, {
       role: "user",
       text: userText,
     });
-    const assistantMessage = store.appendIdeationMessage(session.id, {
+    const assistantMessage = await appStore.appendIdeationMessage(session.id, {
       role: "assistant",
       text: ideation.rawText,
       extractedPrompt: ideation.glslPrompt,
@@ -541,21 +551,12 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
 
 app.post("/v1/sessions/:id/ideation/reset", async (request, reply) => {
   const sessionId = (request.params as { id: string }).id;
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const { asset } = store.resetIdeation(session.id);
-  if (asset?.storagePath) {
-    try {
-      unlinkSync(asset.storagePath);
-      const sessionDir = join(config.ideationAssetDir, session.id);
-      rmSync(sessionDir, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup.
-    }
-  }
+  await appStore.resetIdeation(session.id);
 
   return reply.send({ ok: true });
 });
@@ -567,12 +568,15 @@ app.post("/v1/sessions/:id/optimize/suggest", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const ideationAsset = store.getIdeationAsset(session.id);
+  const ideationAsset = await appStore.getIdeationAsset(session.id);
+  const ideationAssetPayload = ideationAsset
+    ? await appStore.getIdeationAssetPayload(session.id)
+    : undefined;
 
   try {
     const optimize = await runGeminiOptimize({
@@ -580,10 +584,10 @@ app.post("/v1/sessions/:id/optimize/suggest", async (request, reply) => {
       currentCode: parsed.data.currentCode,
       previewFrameDataUrl: parsed.data.previewFrameDataUrl,
       userInstruction: parsed.data.userInstruction,
-      ideationAsset: ideationAsset
+      ideationAsset: ideationAsset && ideationAssetPayload
         ? {
             mimeType: ideationAsset.mimeType,
-            storagePath: ideationAsset.storagePath,
+            dataBase64: ideationAssetPayload.dataBase64,
           }
         : undefined,
     });
@@ -598,7 +602,7 @@ app.post("/v1/sessions/:id/optimize/suggest", async (request, reply) => {
           fallbackUsed: optimize.fallbackUsed,
           latencyMs: optimize.latencyMs,
         },
-        assetUsed: Boolean(ideationAsset),
+        assetUsed: Boolean(ideationAsset && ideationAssetPayload),
       },
     });
   } catch (error) {
@@ -616,12 +620,12 @@ app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const parentRevision = resolveParentRevision(session.id, parsed.data.parentRevisionId);
+  const parentRevision = await resolveParentRevision(session.id, parsed.data.parentRevisionId);
   if (parsed.data.parentRevisionId && !parentRevision) {
     return reply.status(404).send({ error: "Parent revision not found." });
   }
@@ -649,7 +653,7 @@ app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
       latestCode: parsed.data.currentCode,
     });
 
-    const revision = store.createRevision({
+    const revision = await appStore.createRevision({
       sessionId: session.id,
       parentRevisionId: parentRevision?.id ?? null,
       prompt: `[one-click optimize apply]\n${parsed.data.optimizePrompt}`,
@@ -662,7 +666,7 @@ app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
       compileErrors: pipelineResult.compileErrors,
     });
 
-    store.createArtifact({
+    await appStore.createArtifact({
       revisionId: revision.id,
       kind: "glsl_fragment",
       content: pipelineResult.code,
@@ -694,15 +698,15 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
   const parentRevision =
     parsed.data.parentRevisionId && parsed.data.parentRevisionId.trim().length > 0
-      ? store.getRevision(parsed.data.parentRevisionId.trim())
-      : store.getLatestRevisionBySession(session.id);
+      ? await appStore.getRevision(parsed.data.parentRevisionId.trim())
+      : await appStore.getLatestRevisionBySession(session.id);
   if (parsed.data.parentRevisionId && !parentRevision) {
     return reply.status(404).send({ error: "Parent revision not found." });
   }
@@ -710,7 +714,10 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
     return reply.status(409).send({ error: "Parent revision does not belong to this session." });
   }
 
-  const ideationAsset = store.getIdeationAsset(session.id);
+  const ideationAsset = await appStore.getIdeationAsset(session.id);
+  const ideationAssetPayload = ideationAsset
+    ? await appStore.getIdeationAssetPayload(session.id)
+    : undefined;
 
   try {
     const optimize = await runGeminiOptimize({
@@ -718,10 +725,10 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
       currentCode: parsed.data.currentCode,
       previewFrameDataUrl: parsed.data.previewFrameDataUrl,
       userInstruction: parsed.data.userInstruction,
-      ideationAsset: ideationAsset
+      ideationAsset: ideationAsset && ideationAssetPayload
         ? {
             mimeType: ideationAsset.mimeType,
-            storagePath: ideationAsset.storagePath,
+            dataBase64: ideationAssetPayload.dataBase64,
           }
         : undefined,
     });
@@ -745,7 +752,7 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
       latestCode: parsed.data.currentCode,
     });
 
-    const revision = store.createRevision({
+    const revision = await appStore.createRevision({
       sessionId: session.id,
       parentRevisionId: parentRevision?.id ?? null,
       prompt: `[one-click optimize]\n${optimize.optimizePrompt}`,
@@ -758,7 +765,7 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
       compileErrors: pipelineResult.compileErrors,
     });
 
-    store.createArtifact({
+    await appStore.createArtifact({
       revisionId: revision.id,
       kind: "glsl_fragment",
       content: pipelineResult.code,
@@ -779,7 +786,7 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
           fallbackUsed: optimize.fallbackUsed,
           latencyMs: optimize.latencyMs,
         },
-        assetUsed: Boolean(ideationAsset),
+        assetUsed: Boolean(ideationAsset && ideationAssetPayload),
       },
     });
   } catch (error) {
@@ -899,17 +906,17 @@ app.post("/v1/favorites/:id/archive", async (request, reply) => {
 
 app.get("/v1/sessions/:id/revisions/latest", async (request, reply) => {
   const sessionId = (request.params as { id: string }).id;
-  const session = store.getSession(sessionId);
+  const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const revision = store.getLatestRevisionBySession(session.id);
+  const revision = await appStore.getLatestRevisionBySession(session.id);
   if (!revision) {
     return reply.status(404).send({ error: "No revisions yet." });
   }
 
-  const artifact = store.getArtifactByRevisionAndKind(revision.id, "glsl_fragment");
+  const artifact = await appStore.getArtifactByRevisionAndKind(revision.id, "glsl_fragment");
   if (!artifact) {
     return reply.status(404).send({ error: "No GLSL artifact for latest revision." });
   }
@@ -924,7 +931,7 @@ app.post("/v1/revisions/:id/export", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const revision = store.getRevision(revisionId);
+  const revision = await appStore.getRevision(revisionId);
   if (!revision) {
     return reply.status(404).send({ error: "Revision not found." });
   }
@@ -933,12 +940,12 @@ app.post("/v1/revisions/:id/export", async (request, reply) => {
     return reply.status(400).send({ error: "Unsupported export format." });
   }
 
-  const artifact = store.getArtifactByRevisionAndKind(revision.id, "glsl_fragment");
+  const artifact = await appStore.getArtifactByRevisionAndKind(revision.id, "glsl_fragment");
   if (!artifact) {
     return reply.status(404).send({ error: "GLSL artifact not found." });
   }
 
-  const session = store.getSession(revision.sessionId);
+  const session = await appStore.getSession(revision.sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found for revision." });
   }

@@ -49,7 +49,6 @@ export interface IdeationAsset {
   fileName: string;
   mimeType: string;
   bytes: number;
-  storagePath: string;
   createdAt: string;
 }
 

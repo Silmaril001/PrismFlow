@@ -76,8 +76,9 @@ Gemini（需求提炼弹窗）建议配置：
 
 M1 线上部署骨架配置：
 
+- `APP_STORE_PROVIDER=memory|postgres`（默认 `memory`）
 - `FAVORITES_PROVIDER=local|postgres`（默认 `local`）
-- `POSTGRES_URL=`（当 `FAVORITES_PROVIDER=postgres` 时必填）
+- `POSTGRES_URL=`（当 `APP_STORE_PROVIDER=postgres` 或 `FAVORITES_PROVIDER=postgres` 时必填）
 - `POSTGRES_SSL=false|true`
 - `POSTGRES_AUTO_MIGRATE=true|false`
 - `OBJECT_STORAGE_PROVIDER=none|s3`（默认 `none`）
@@ -134,7 +135,7 @@ M1 线上部署骨架配置：
 - 默认按 Shadertoy 约定生成（`mainImage`, `iTime`, `iResolution`）
 - WebGL 实时预览使用 WebGL2 优先（`#version 300 es` 包装 + Shadertoy 变量兼容），不支持时回退 WebGL1
 - Revision 版本记录（内存存储）
-- M1 新增依赖就绪探针：`/ready`（包含 favorites 存储与对象存储健康检查）
+- M1 新增依赖就绪探针：`/ready`（包含 app store 与 favorites 存储健康检查）
 - `.glsl` 导出
 - PBR 管线 stub（接口可用，执行返回未启用）
 
@@ -171,8 +172,9 @@ M1 线上部署骨架配置：
 
 ## 当前限制
 
-- 存储为内存态，重启服务后会话丢失
-- `FAVORITES_PROVIDER=postgres` 可让收藏持久化；其余会话链路仍在 M2 迁移范围
+- 默认使用内存存储；如需重启不丢失，请切换 PostgreSQL 持久化配置
+- `APP_STORE_PROVIDER=memory` 时，会话与 revision/artifact/ideation 数据重启后会丢失
+- `APP_STORE_PROVIDER=postgres` + `FAVORITES_PROVIDER=postgres` 时，核心链路可持久化（session/revision/artifact/ideation/favorite）
 - Shader 校验为基础语义检查，不是完整 GPU 编译器级校验
 - 多模态图片仅支持 `data:image/*` 形式（UI 粘贴自动处理），单张建议不超过约 `1.5MB`
 - 需求提炼的视频会在服务端依赖 `ffmpeg` 做抽帧预处理
