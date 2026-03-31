@@ -1,0 +1,20 @@
+{
+  "name": "ai-shader-tool",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm-run-all -p dev:api dev:web",
+    "dev:api": "npm --workspace @shader-mvp/api run dev",
+    "dev:web": "npm --workspace @shader-mvp/web run dev",
+    "build": "npm-run-all build:api build:web",
+    "build:api": "npm --workspace @shader-mvp/api run build",
+    "build:web": "npm --workspace @shader-mvp/web run build",
+    "start:oneclick": "bash ./scripts/one-click-start.sh"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}
