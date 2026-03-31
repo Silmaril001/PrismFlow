@@ -11,11 +11,7 @@ import { PbrPipeline } from "./pipeline/pbrPipeline.js";
 import { ShaderPipeline } from "./pipeline/shaderPipeline.js";
 import { PipelineUnavailableError } from "./pipeline/types.js";
 import {
-  archiveFavoriteById,
-  createFavorite,
-  getFavoriteById,
-  listFavorites,
-  renameFavoriteById,
+  createFavoritesStore,
 } from "./services/favoritesStore.js";
 import { buildLinkedReferenceDataUrls, runGeminiIdeation } from "./services/geminiIdeationLLM.js";
 import { nameFavoriteFromGemini } from "./services/geminiFavoriteNamer.js";
@@ -31,6 +27,7 @@ const orchestrator = new PipelineOrchestrator([
   new ShaderPipeline(),
   new PbrPipeline(),
 ]);
+const favoritesStore = await createFavoritesStore();
 
 const createSessionBody = z.object({
   mode: z.enum(["shader_glsl", "pbr_texture"]),
@@ -238,8 +235,23 @@ await app.register(cors, {
   origin: true,
 });
 
+app.addHook("onClose", async () => {
+  await favoritesStore.close();
+});
+
 app.get("/health", async () => {
-  return { ok: true, service: "shader-mvp-api" };
+  return { ok: true, service: "shader-mvp-api", favoritesProvider: favoritesStore.provider };
+});
+
+app.get("/ready", async (_request, reply) => {
+  const favorites = await favoritesStore.healthCheck();
+  const ok = favorites.ok;
+  return reply.status(ok ? 200 : 503).send({
+    ok,
+    checks: {
+      favorites,
+    },
+  });
 });
 
 app.post("/v1/sessions", async (request, reply) => {
@@ -783,13 +795,13 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
 });
 
 app.get("/v1/favorites", async (_request, reply) => {
-  const favorites = listFavorites();
+  const favorites = await favoritesStore.listFavorites();
   return reply.send({ favorites });
 });
 
 app.get("/v1/favorites/:id", async (request, reply) => {
   const favoriteId = (request.params as { id: string }).id;
-  const favorite = getFavoriteById(favoriteId);
+  const favorite = await favoritesStore.getFavoriteById(favoriteId);
   if (!favorite) {
     return reply.status(404).send({ error: "Favorite not found." });
   }
@@ -822,7 +834,7 @@ app.post("/v1/favorites", async (request, reply) => {
   }
 
   try {
-    const favorite = createFavorite({
+    const favorite = await favoritesStore.createFavorite({
       suggestedName: naming.name,
       sourcePrompt: parsed.data.sourcePrompt,
       promptPreview: manualPromptPreview || naming.promptPreview,
@@ -856,7 +868,7 @@ app.post("/v1/favorites/:id/rename", async (request, reply) => {
   }
 
   try {
-    const favorite = renameFavoriteById(favoriteId, parsed.data.name);
+    const favorite = await favoritesStore.renameFavoriteById(favoriteId, parsed.data.name);
     if (!favorite) {
       return reply.status(404).send({ error: "Favorite not found." });
     }
@@ -872,7 +884,7 @@ app.post("/v1/favorites/:id/rename", async (request, reply) => {
 app.post("/v1/favorites/:id/archive", async (request, reply) => {
   const favoriteId = (request.params as { id: string }).id;
   try {
-    const archived = archiveFavoriteById(favoriteId);
+    const archived = await favoritesStore.archiveFavoriteById(favoriteId);
     if (!archived) {
       return reply.status(404).send({ error: "Favorite not found." });
     }

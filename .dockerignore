@@ -1,0 +1,11 @@
+.git
+.gitignore
+node_modules
+apps/web/node_modules
+apps/api/node_modules
+apps/web/dist
+apps/api/dist
+apps/api/.env
+apps/api/storage/favorites
+apps/api/storage/ideation
+npm-debug.log*
