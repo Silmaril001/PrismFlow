@@ -3,5 +3,6 @@ dist
 .vite
 .env
 apps/api/.env
+apps/api/storage/
 .DS_Store
 npm-debug.log*
