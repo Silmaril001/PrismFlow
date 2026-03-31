@@ -74,6 +74,22 @@ Gemini（需求提炼弹窗）建议配置：
 - `FAVORITE_NAMER_TIMEOUT_MS=20000`
 - `FAVORITE_NAMER_FALLBACK_TIMEOUT_MS=20000`
 
+M1 线上部署骨架配置：
+
+- `FAVORITES_PROVIDER=local|postgres`（默认 `local`）
+- `POSTGRES_URL=`（当 `FAVORITES_PROVIDER=postgres` 时必填）
+- `POSTGRES_SSL=false|true`
+- `POSTGRES_AUTO_MIGRATE=true|false`
+- `OBJECT_STORAGE_PROVIDER=none|s3`（默认 `none`）
+- `S3_ENDPOINT=`
+- `S3_REGION=auto`
+- `S3_BUCKET=`
+- `S3_ACCESS_KEY_ID=`
+- `S3_SECRET_ACCESS_KEY=`
+- `S3_PUBLIC_BASE_URL=`
+- `S3_FORCE_PATH_STYLE=true|false`
+- `S3_KEY_PREFIX=prismflow`
+
 提示词模板（Markdown，可直接编辑）：
 
 - `apps/api/prompts/shader.system.md`（Shader 生成主系统提示词）
@@ -118,6 +134,7 @@ Gemini（需求提炼弹窗）建议配置：
 - 默认按 Shadertoy 约定生成（`mainImage`, `iTime`, `iResolution`）
 - WebGL 实时预览使用 WebGL2 优先（`#version 300 es` 包装 + Shadertoy 变量兼容），不支持时回退 WebGL1
 - Revision 版本记录（内存存储）
+- M1 新增依赖就绪探针：`/ready`（包含 favorites 存储与对象存储健康检查）
 - `.glsl` 导出
 - PBR 管线 stub（接口可用，执行返回未启用）
 
@@ -128,6 +145,8 @@ Gemini（需求提炼弹窗）建议配置：
 
 ## 核心 API（M1）
 
+- `GET /health`
+- `GET /ready`
 - `POST /v1/sessions`
 - `POST /v1/sessions/:id/messages`
 - `GET /v1/sessions/:id/ideation/state`
@@ -153,9 +172,14 @@ Gemini（需求提炼弹窗）建议配置：
 ## 当前限制
 
 - 存储为内存态，重启服务后会话丢失
+- `FAVORITES_PROVIDER=postgres` 可让收藏持久化；其余会话链路仍在 M2 迁移范围
 - Shader 校验为基础语义检查，不是完整 GPU 编译器级校验
 - 多模态图片仅支持 `data:image/*` 形式（UI 粘贴自动处理），单张建议不超过约 `1.5MB`
 - 需求提炼的视频会在服务端依赖 `ffmpeg` 做抽帧预处理
 - PBR 仅 stub，尚未接入图像生成和 ComfyUI 工作流
 - 服务端请求不再强制直连，会跟随系统代理/环境代理设置
 - 若终端里没有 `HTTPS_PROXY` 但系统代理已开启（macOS Network Proxy），API 会自动桥接系统代理；如需禁用可设 `USE_MACOS_SYSTEM_PROXY=false`
+
+## M1 部署文档
+
+- `docs/M1_ONLINE_INFRA.md`

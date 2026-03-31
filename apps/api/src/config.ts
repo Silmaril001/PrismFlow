@@ -171,6 +171,21 @@ const geminiMaxOutputTokens =
     : 0;
 const ideationAssetDirFromEnv = readEnv("IDEATION_ASSET_DIR");
 const favoritesDirFromEnv = readEnv("FAVORITES_DIR");
+const favoritesProviderFromEnv = readEnv("FAVORITES_PROVIDER")?.toLowerCase();
+const favoritesProvider = favoritesProviderFromEnv === "postgres" ? "postgres" : "local";
+const postgresUrlFromEnv = readEnv("POSTGRES_URL");
+const postgresSsl = readBooleanEnv("POSTGRES_SSL", false);
+const postgresAutoMigrate = readBooleanEnv("POSTGRES_AUTO_MIGRATE", true);
+const objectStorageProviderFromEnv = readEnv("OBJECT_STORAGE_PROVIDER")?.toLowerCase();
+const objectStorageProvider = objectStorageProviderFromEnv === "s3" ? "s3" : "none";
+const s3EndpointFromEnv = readEnv("S3_ENDPOINT");
+const s3RegionFromEnv = readEnv("S3_REGION") ?? "auto";
+const s3BucketFromEnv = readEnv("S3_BUCKET");
+const s3AccessKeyIdFromEnv = readEnv("S3_ACCESS_KEY_ID");
+const s3SecretAccessKeyFromEnv = readEnv("S3_SECRET_ACCESS_KEY");
+const s3PublicBaseUrlFromEnv = readEnv("S3_PUBLIC_BASE_URL");
+const s3ForcePathStyle = readBooleanEnv("S3_FORCE_PATH_STYLE", true);
+const s3KeyPrefixFromEnv = readEnv("S3_KEY_PREFIX") ?? "prismflow";
 const favoriteNamerApiKeyFromEnv =
   readEnv("FAVORITE_NAMER_API_KEY") ??
   readEnv("DEEPSEEK_API_KEY") ??
@@ -234,6 +249,19 @@ export const config = {
   geminiMaxOutputTokens,
   ideationAssetDir: ideationAssetDirFromEnv ?? defaultIdeationAssetDir,
   favoritesDir: favoritesDirFromEnv ?? defaultFavoritesDir,
+  favoritesProvider,
+  postgresUrl: postgresUrlFromEnv,
+  postgresSsl,
+  postgresAutoMigrate,
+  objectStorageProvider,
+  s3Endpoint: s3EndpointFromEnv,
+  s3Region: s3RegionFromEnv,
+  s3Bucket: s3BucketFromEnv,
+  s3AccessKeyId: s3AccessKeyIdFromEnv,
+  s3SecretAccessKey: s3SecretAccessKeyFromEnv,
+  s3PublicBaseUrl: s3PublicBaseUrlFromEnv,
+  s3ForcePathStyle,
+  s3KeyPrefix: s3KeyPrefixFromEnv,
   favoriteNamerApiKey: favoriteNamerApiKeyFromEnv,
   favoriteNamerBaseUrl: favoriteNamerBaseUrlFromEnv,
   favoriteNamerModel: favoriteNamerModelFromEnv,
