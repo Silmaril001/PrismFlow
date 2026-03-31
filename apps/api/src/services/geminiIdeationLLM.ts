@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProxyAgent } from "undici";
@@ -13,7 +13,7 @@ interface IdeationHistoryMessage {
 
 interface IdeationAssetInput {
   mimeType: string;
-  storagePath: string;
+  dataBase64: string;
 }
 
 interface GeminiPart {
@@ -318,6 +318,28 @@ async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPar
   }
 }
 
+function extensionFromVideoMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("webm")) return ".webm";
+  if (normalized.includes("quicktime")) return ".mov";
+  if (normalized.includes("mp4")) return ".mp4";
+  return ".video";
+}
+
+async function extractVideoFramesAsPartsFromBase64(
+  mimeType: string,
+  dataBase64: string,
+): Promise<GeminiPart[]> {
+  const tempDir = mkdtempSync(join(tmpdir(), "shader-ideation-video-input-"));
+  const inputPath = join(tempDir, `input${extensionFromVideoMimeType(mimeType)}`);
+  try {
+    writeFileSync(inputPath, Buffer.from(dataBase64, "base64"));
+    return await extractVideoFramesAsParts(inputPath);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function partToDataUrl(part: GeminiPart): string | null {
   if (!part.inline_data?.mime_type || !part.inline_data?.data) {
     return null;
@@ -327,15 +349,13 @@ function partToDataUrl(part: GeminiPart): string | null {
 
 export async function buildLinkedReferenceDataUrls(asset: IdeationAssetInput): Promise<string[]> {
   if (isVideoMimeType(asset.mimeType)) {
-    const parts = await extractVideoFramesAsParts(asset.storagePath);
+    const parts = await extractVideoFramesAsPartsFromBase64(asset.mimeType, asset.dataBase64);
     return parts
       .map(partToDataUrl)
       .filter((item): item is string => Boolean(item));
   }
 
-  return [
-    `data:${asset.mimeType};base64,${readFileSync(asset.storagePath).toString("base64")}`,
-  ];
+  return [`data:${asset.mimeType};base64,${asset.dataBase64}`];
 }
 
 export async function runGeminiIdeation(
@@ -353,17 +373,19 @@ export async function runGeminiIdeation(
 
   if (request.asset) {
     if (isVideoAsset) {
-      const frameParts = await extractVideoFramesAsParts(request.asset.storagePath);
+      const frameParts = await extractVideoFramesAsPartsFromBase64(
+        request.asset.mimeType,
+        request.asset.dataBase64,
+      );
       userParts.push({
         text: `补充：输入素材为视频。服务端已自动按每秒 ${config.geminiVideoFrameFps} 帧抽取 ${frameParts.length} 张关键帧用于分析。`,
       });
       userParts.push(...frameParts);
     } else {
-      const base64 = readFileSync(request.asset.storagePath).toString("base64");
       userParts.push({
         inline_data: {
           mime_type: request.asset.mimeType,
-          data: base64,
+          data: request.asset.dataBase64,
         },
       });
     }
