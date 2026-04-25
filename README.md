@@ -142,9 +142,9 @@ M1 前端直连线上 API（当前 DO 测试环境）：
 - GLSL 标题旁支持星标收藏，收藏会自动调用收藏命名模型并生成提示词摘要
 - 当前编号支持“一键优化历史”回退/重做，可在任意历史版本继续触发一键优化
 - 新增收藏页入口（主界面标题右侧）：`/favorites` 新标签页打开
-- 收藏页支持 4 列缩略图瀑布展示，默认静帧，悬停自动播放
+- 收藏页作为公共广场展示全体作品，支持 4 列缩略图瀑布展示，默认静帧，悬停自动播放
 - 收藏页支持“新建”入口：`/favorites/new`，可手动写 GLSL 并保存为新收藏
-- 收藏卡片右下角下拉菜单支持“重命名 / 删除（归档）”
+- 公共收藏为只读展示：不支持重命名和删除（后端接口已关闭）
 - 收藏详情页支持临时代码编辑 + 编译运行 + 代码debug + 手动命名保存新副本（仅新增，不回写原收藏）
 - 默认按 Shadertoy 约定生成（`mainImage`, `iTime`, `iResolution`）
 - WebGL 实时预览使用 WebGL2 优先（`#version 300 es` 包装 + Shadertoy 变量兼容），不支持时回退 WebGL1
@@ -173,8 +173,8 @@ M1 前端直连线上 API（当前 DO 测试环境）：
 - `GET /v1/favorites`
 - `GET /v1/favorites/:id`
 - `POST /v1/favorites`
-- `POST /v1/favorites/:id/rename`
-- `POST /v1/favorites/:id/archive`
+- `POST /v1/favorites/:id/rename`（M3 起返回 `410`，公共收藏模式禁用）
+- `POST /v1/favorites/:id/archive`（M3 起返回 `410`，公共收藏模式禁用）
 - `GET /v1/sessions/:id/revisions/latest`
 - `POST /v1/revisions/:id/export`
 

@@ -333,21 +333,3 @@ export async function getFavoriteById(id: string): Promise<FavoriteDetail> {
   });
   return data.favorite;
 }
-
-export async function renameFavorite(id: string, name: string): Promise<FavoriteDetail> {
-  const data = await request<{ favorite: FavoriteDetail }>(`/v1/favorites/${encodeURIComponent(id)}/rename`, {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  });
-  return data.favorite;
-}
-
-export async function archiveFavorite(id: string): Promise<{ ok: boolean; favoriteId: string; archivedAt?: string }> {
-  return request<{ ok: boolean; favoriteId: string; archivedAt?: string }>(
-    `/v1/favorites/${encodeURIComponent(id)}/archive`,
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    },
-  );
-}

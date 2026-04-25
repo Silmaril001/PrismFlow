@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  archiveFavorite,
   getFavoriteById,
   listFavorites,
-  renameFavorite,
   type FavoriteDetail,
   type FavoriteSummary,
 } from "../api";
@@ -15,7 +13,6 @@ const CARD_HEIGHT = 180;
 export function FavoritesGallery() {
   const [favorites, setFavorites] = useState<FavoriteSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
   const [hoveringId, setHoveringId] = useState<string | null>(null);
   const [detailCache, setDetailCache] = useState<Record<string, FavoriteDetail>>({});
@@ -47,7 +44,7 @@ export function FavoritesGallery() {
     };
   }, []);
 
-  const countLabel = useMemo(() => `共 ${favorites.length} 个收藏`, [favorites.length]);
+  const countLabel = useMemo(() => `公共收藏广场 · 共 ${favorites.length} 个作品`, [favorites.length]);
 
   async function ensureDetailLoaded(id: string) {
     if (detailCache[id] || detailLoadingIds[id]) {
@@ -72,76 +69,11 @@ export function FavoritesGallery() {
     window.open("/favorites/new", "_blank", "noopener,noreferrer");
   }
 
-  async function handleRenameFavorite(id: string, currentName: string) {
-    if (actionLoading) {
-      return;
-    }
-    const nextName = window.prompt("输入新的收藏名称", currentName)?.trim();
-    if (!nextName || nextName === currentName) {
-      return;
-    }
-
-    setActionLoading(true);
-    setError("");
-    try {
-      const updated = await renameFavorite(id, nextName);
-      setFavorites((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, name: updated.name } : item)),
-      );
-      setDetailCache((prev) => {
-        const current = prev[id];
-        if (!current) {
-          return prev;
-        }
-        return {
-          ...prev,
-          [id]: {
-            ...current,
-            name: updated.name,
-            instructionFileName: updated.instructionFileName,
-            codeFileName: updated.codeFileName,
-          },
-        };
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "重命名失败");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleArchiveFavorite(id: string) {
-    if (actionLoading) {
-      return;
-    }
-    const confirmed = window.confirm("确认删除该收藏？删除后会移入下沉目录，不会显示在收藏页。");
-    if (!confirmed) {
-      return;
-    }
-
-    setActionLoading(true);
-    setError("");
-    try {
-      await archiveFavorite(id);
-      setFavorites((prev) => prev.filter((item) => item.id !== id));
-      setDetailCache((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      setHoveringId((prev) => (prev === id ? null : prev));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "删除失败");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
   return (
     <main className="favorites-shell">
       <header className="favorites-header">
         <div>
-          <h1>Shader 收藏库</h1>
+          <h1>公共收藏广场</h1>
           <p>{countLabel}</p>
         </div>
         <div className="favorites-header-actions">
@@ -166,7 +98,7 @@ export function FavoritesGallery() {
 
       {loading ? <div className="favorites-empty">加载中...</div> : null}
       {!loading && favorites.length === 0 ? (
-        <div className="favorites-empty">还没有收藏内容。回到主界面点星标即可加入这里。</div>
+        <div className="favorites-empty">公共收藏广场还没有内容。回到主界面点星标即可发布到这里。</div>
       ) : null}
       {error ? <pre className="compile-error">{error}</pre> : null}
 
@@ -212,25 +144,6 @@ export function FavoritesGallery() {
                       {new Date(item.createdAt).toLocaleString()}
                     </div>
                   </div>
-                  <details className="favorite-card-menu" onClick={(event) => event.stopPropagation()}>
-                    <summary title="更多操作">⋯</summary>
-                    <div className="favorite-card-menu-list">
-                      <button
-                        type="button"
-                        onClick={() => handleRenameFavorite(item.id, item.name)}
-                        disabled={actionLoading}
-                      >
-                        重命名
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleArchiveFavorite(item.id)}
-                        disabled={actionLoading}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </details>
                 </div>
               </article>
             );

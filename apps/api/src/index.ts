@@ -147,10 +147,6 @@ const favoriteCreateBody = z.object({
   sessionId: z.string().min(1).max(120).optional(),
 });
 
-const favoriteRenameBody = z.object({
-  name: z.string().min(1).max(80),
-});
-
 function sanitizeFileName(fileName: string): string {
   const base = basename(fileName);
   const cleaned = base.replace(/[^\w.\-]/g, "_");
@@ -868,40 +864,17 @@ app.post("/v1/favorites", async (request, reply) => {
 });
 
 app.post("/v1/favorites/:id/rename", async (request, reply) => {
-  const favoriteId = (request.params as { id: string }).id;
-  const parsed = favoriteRenameBody.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.status(400).send({ error: parsed.error.flatten() });
-  }
-
-  try {
-    const favorite = await favoritesStore.renameFavoriteById(favoriteId, parsed.data.name);
-    if (!favorite) {
-      return reply.status(404).send({ error: "Favorite not found." });
-    }
-    return reply.send({ favorite });
-  } catch (error) {
-    request.log.error({ err: error }, "Rename favorite failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Rename favorite failed.",
-    });
-  }
+  request.log.info("Favorite rename is disabled for public gallery.");
+  return reply.status(410).send({
+    error: "Favorite rename is disabled in public gallery mode.",
+  });
 });
 
 app.post("/v1/favorites/:id/archive", async (request, reply) => {
-  const favoriteId = (request.params as { id: string }).id;
-  try {
-    const archived = await favoritesStore.archiveFavoriteById(favoriteId);
-    if (!archived) {
-      return reply.status(404).send({ error: "Favorite not found." });
-    }
-    return reply.send({ ok: true, favoriteId: archived.id, archivedAt: archived.archivedAt });
-  } catch (error) {
-    request.log.error({ err: error }, "Archive favorite failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Archive favorite failed.",
-    });
-  }
+  request.log.info("Favorite archive is disabled for public gallery.");
+  return reply.status(410).send({
+    error: "Favorite delete/archive is disabled in public gallery mode.",
+  });
 });
 
 app.get("/v1/sessions/:id/revisions/latest", async (request, reply) => {
