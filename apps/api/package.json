@@ -1,12 +1,14 @@
 {
   "name": "@shader-mvp/api",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "doctor:cloud": "node ./scripts/doctor-cloud.mjs --strict-online",
+    "doctor:cloud:soft": "node ./scripts/doctor-cloud.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1020.0",

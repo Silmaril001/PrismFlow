@@ -107,3 +107,12 @@ Notes:
    - list favorites
    - fetch favorite detail
 5. Restart API and recheck persistence when using PostgreSQL providers.
+
+Cloud dependency preflight:
+
+- `npm --workspace @shader-mvp/api run doctor:cloud`
+- optional write smoke test: `node apps/api/scripts/doctor-cloud.mjs --strict-online --write-smoke`
+
+Detailed Neon/R2/DO walkthrough:
+
+- [`docs/M1_NEON_R2_DO_PLAYBOOK.md`](./M1_NEON_R2_DO_PLAYBOOK.md)

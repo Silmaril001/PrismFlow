@@ -91,6 +91,20 @@ M1 线上部署骨架配置：
 - `S3_FORCE_PATH_STYLE=true|false`
 - `S3_KEY_PREFIX=prismflow`
 
+M1 云接入预检（Neon/R2）：
+
+- `npm --workspace @shader-mvp/api run doctor:cloud`
+- 可选写入烟雾测试：`node apps/api/scripts/doctor-cloud.mjs --strict-online --write-smoke`
+
+M1 前端直连线上 API（当前 DO 测试环境）：
+
+- 开发调试：`npm run dev:web:online`
+- 生产构建：`npm run build:web:online`
+- 浏览器打开：`http://localhost:5174`
+- 公网访问地址：`https://prismflow.duckdns.org`
+- 线上 API 健康检查（health）：`curl -s https://prismflow.duckdns.org/health`
+- 线上 API 健康检查（ready）：`curl -s https://prismflow.duckdns.org/ready`
+
 提示词模板（Markdown，可直接编辑）：
 
 - `apps/api/prompts/shader.system.md`（Shader 生成主系统提示词）
@@ -185,3 +199,4 @@ M1 线上部署骨架配置：
 ## M1 部署文档
 
 - `docs/M1_ONLINE_INFRA.md`
+- `docs/M1_NEON_R2_DO_PLAYBOOK.md`

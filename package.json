@@ -1,7 +1,7 @@
 {
   "name": "ai-shader-tool",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "workspaces": [
     "apps/*"
   ],
@@ -9,9 +9,11 @@
     "dev": "npm-run-all -p dev:api dev:web",
     "dev:api": "npm --workspace @shader-mvp/api run dev",
     "dev:web": "npm --workspace @shader-mvp/web run dev",
+    "dev:web:online": "VITE_API_BASE_URL=https://prismflow.duckdns.org npm --workspace @shader-mvp/web run dev",
     "build": "npm-run-all build:api build:web",
     "build:api": "npm --workspace @shader-mvp/api run build",
     "build:web": "npm --workspace @shader-mvp/web run build",
+    "build:web:online": "VITE_API_BASE_URL=https://prismflow.duckdns.org npm --workspace @shader-mvp/web run build",
     "start:oneclick": "bash ./scripts/one-click-start.sh"
   },
   "devDependencies": {

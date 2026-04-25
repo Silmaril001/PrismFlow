@@ -299,7 +299,8 @@ export async function generateShaderWithOpenAI(
       model: `fallback-local-template-${transport.channel}`,
       requestedModel: `fallback-local-template-${transport.channel}`,
       effectiveModel: `fallback-local-template-${transport.channel}`,
-      fallbackUsed: false,
+      // No channel key means this response is generated from local fallback template.
+      fallbackUsed: true,
       latencyMs: Date.now() - startedAt,
     };
   }

@@ -2,6 +2,10 @@ import { nanoid } from "nanoid";
 import { Pool } from "pg";
 import { config } from "./config.js";
 import {
+  createObjectStorageProviderFromConfig,
+  type ObjectStorageProvider,
+} from "./services/objectStorage.js";
+import {
   type Artifact,
   type ArtifactKind,
   type CompileStatus,
@@ -286,7 +290,10 @@ interface IdeationAssetRow {
   file_name: string;
   mime_type: string;
   bytes: number;
-  data_base64: string;
+  data_base64: string | null;
+  storage_provider: string | null;
+  object_key: string | null;
+  object_url: string | null;
   created_at: string | Date;
 }
 
@@ -363,9 +370,11 @@ function mapIdeationAssetRow(row: IdeationAssetRow): IdeationAsset {
 class PostgresStore implements AppStore {
   provider: "postgres" = "postgres";
   private readonly pool: Pool;
+  private readonly objectStorage: ObjectStorageProvider;
 
-  constructor(pool: Pool) {
+  constructor(pool: Pool, objectStorage: ObjectStorageProvider) {
     this.pool = pool;
+    this.objectStorage = objectStorage;
   }
 
   async init(): Promise<void> {
@@ -429,9 +438,21 @@ class PostgresStore implements AppStore {
         file_name TEXT NOT NULL,
         mime_type TEXT NOT NULL,
         bytes INTEGER NOT NULL,
-        data_base64 TEXT NOT NULL,
+        data_base64 TEXT,
+        storage_provider TEXT,
+        object_key TEXT,
+        object_url TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      ALTER TABLE ideation_assets
+        ADD COLUMN IF NOT EXISTS storage_provider TEXT;
+      ALTER TABLE ideation_assets
+        ADD COLUMN IF NOT EXISTS object_key TEXT;
+      ALTER TABLE ideation_assets
+        ADD COLUMN IF NOT EXISTS object_url TEXT;
+      ALTER TABLE ideation_assets
+        ALTER COLUMN data_base64 DROP NOT NULL;
     `);
   }
 
@@ -639,7 +660,8 @@ class PostgresStore implements AppStore {
   async getIdeationAsset(sessionId: string): Promise<IdeationAsset | undefined> {
     const result = await this.pool.query<IdeationAssetRow>(
       `
-        SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64, created_at
+        SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64,
+               storage_provider, object_key, object_url, created_at
         FROM ideation_assets
         WHERE session_id = $1
         LIMIT 1
@@ -655,7 +677,8 @@ class PostgresStore implements AppStore {
   async getIdeationAssetPayload(sessionId: string): Promise<IdeationAssetPayload | undefined> {
     const result = await this.pool.query<IdeationAssetRow>(
       `
-        SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64, created_at
+        SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64,
+               storage_provider, object_key, object_url, created_at
         FROM ideation_assets
         WHERE session_id = $1
         LIMIT 1
@@ -666,11 +689,36 @@ class PostgresStore implements AppStore {
       return undefined;
     }
     const row = result.rows[0]!;
-    return {
-      kind: row.kind as IdeationAssetKind,
-      mimeType: row.mime_type,
-      dataBase64: row.data_base64,
-    };
+    if (row.data_base64 && row.data_base64.length > 0) {
+      return {
+        kind: row.kind as IdeationAssetKind,
+        mimeType: row.mime_type,
+        dataBase64: row.data_base64,
+      };
+    }
+
+    if (row.storage_provider === "s3" && row.object_key) {
+      if (this.objectStorage.provider !== "s3") {
+        throw new Error(
+          "Ideation asset payload is stored in object storage, but OBJECT_STORAGE_PROVIDER is not s3.",
+        );
+      }
+
+      const downloaded = await this.objectStorage.readObjectAsBase64({
+        key: row.object_key,
+      });
+      return {
+        kind: row.kind as IdeationAssetKind,
+        mimeType: downloaded.contentType ?? row.mime_type,
+        dataBase64: downloaded.base64,
+      };
+    }
+
+    if (row.object_key) {
+      throw new Error("Ideation asset payload is missing because object storage is unavailable.");
+    }
+
+    return undefined;
   }
 
   async setIdeationAsset(
@@ -686,12 +734,31 @@ class PostgresStore implements AppStore {
       createdAt: new Date().toISOString(),
     };
 
+    let dataBase64: string | null = asset.dataBase64;
+    let storageProvider: string | null = null;
+    let objectKey: string | null = null;
+    let objectUrl: string | null = null;
+    if (this.objectStorage.provider === "s3") {
+      const uploaded = await this.objectStorage.uploadBase64({
+        base64: asset.dataBase64,
+        contentType: asset.mimeType,
+        keyPrefix: `${config.s3KeyPrefix}/ideation/assets`,
+        fileName: asset.fileName,
+      });
+      dataBase64 = null;
+      storageProvider = "s3";
+      objectKey = uploaded.key;
+      objectUrl = uploaded.publicUrl;
+    }
+
     await this.pool.query(
       `
         INSERT INTO ideation_assets (
-          session_id, id, kind, file_name, mime_type, bytes, data_base64, created_at
+          session_id, id, kind, file_name, mime_type, bytes, data_base64,
+          storage_provider, object_key, object_url, created_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11
         )
         ON CONFLICT (session_id) DO UPDATE SET
           id = EXCLUDED.id,
@@ -700,6 +767,9 @@ class PostgresStore implements AppStore {
           mime_type = EXCLUDED.mime_type,
           bytes = EXCLUDED.bytes,
           data_base64 = EXCLUDED.data_base64,
+          storage_provider = EXCLUDED.storage_provider,
+          object_key = EXCLUDED.object_key,
+          object_url = EXCLUDED.object_url,
           created_at = EXCLUDED.created_at
       `,
       [
@@ -709,7 +779,10 @@ class PostgresStore implements AppStore {
         stored.fileName,
         stored.mimeType,
         stored.bytes,
-        asset.dataBase64,
+        dataBase64,
+        storageProvider,
+        objectKey,
+        objectUrl,
         stored.createdAt,
       ],
     );
@@ -723,20 +796,31 @@ class PostgresStore implements AppStore {
       await client.query("BEGIN");
       const assetResult = await client.query<IdeationAssetRow>(
         `
-          SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64, created_at
+          SELECT id, session_id, kind, file_name, mime_type, bytes, data_base64,
+                 storage_provider, object_key, object_url, created_at
           FROM ideation_assets
           WHERE session_id = $1
           LIMIT 1
         `,
         [sessionId],
       );
+      const existingAsset = assetResult.rowCount ? assetResult.rows[0]! : undefined;
+      const objectKeyToDelete = existingAsset?.object_key;
 
       await client.query(`DELETE FROM ideation_messages WHERE session_id = $1`, [sessionId]);
       await client.query(`DELETE FROM ideation_assets WHERE session_id = $1`, [sessionId]);
       await client.query("COMMIT");
 
+      if (objectKeyToDelete && this.objectStorage.provider === "s3") {
+        try {
+          await this.objectStorage.deleteObject({ key: objectKeyToDelete });
+        } catch {
+          // Best-effort cleanup; database state is already consistent.
+        }
+      }
+
       return {
-        asset: assetResult.rowCount ? mapIdeationAssetRow(assetResult.rows[0]!) : undefined,
+        asset: existingAsset ? mapIdeationAssetRow(existingAsset) : undefined,
       };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -781,7 +865,8 @@ export async function createAppStoreFromConfig(): Promise<AppStore> {
     connectionString: config.postgresUrl,
     ssl: config.postgresSsl ? { rejectUnauthorized: false } : undefined,
   });
-  const store = new PostgresStore(pool);
+  const objectStorage = createObjectStorageProviderFromConfig();
+  const store = new PostgresStore(pool, objectStorage);
   await store.init();
   return store;
 }
