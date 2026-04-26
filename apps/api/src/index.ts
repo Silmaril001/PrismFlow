@@ -159,6 +159,24 @@ const favoriteCreateBody = z.object({
   sessionId: z.string().min(1).max(120).optional(),
 });
 
+const generationLogsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(24),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+const generationLogParams = z.object({
+  id: z.string().min(1).max(120),
+});
+
+const analyticsOverviewQuery = z.object({
+  from: z.string().trim().min(1).optional(),
+  to: z.string().trim().min(1).optional(),
+});
+
+const analyticsTimeseriesQuery = analyticsOverviewQuery.extend({
+  bucket: z.enum(["hour", "day"]).default("hour"),
+});
+
 function sanitizeFileName(fileName: string): string {
   const base = basename(fileName);
   const cleaned = base.replace(/[^\w.\-]/g, "_");
@@ -307,6 +325,34 @@ function getClientAddress(request: FastifyRequest): string {
   }
 
   return request.ip;
+}
+
+function getClientKey(request: FastifyRequest): string {
+  const source = getClientAddress(request);
+  return createHash("sha256").update(source).digest("hex").slice(0, 24);
+}
+
+function resolveAnalyticsRange(input: { from?: string; to?: string; defaultHours: number }): {
+  from: string;
+  to: string;
+} {
+  const toDate = input.to ? new Date(input.to) : new Date();
+  if (Number.isNaN(toDate.getTime())) {
+    throw new Error("Invalid 'to' time.");
+  }
+  const fromDate = input.from
+    ? new Date(input.from)
+    : new Date(toDate.getTime() - input.defaultHours * 60 * 60 * 1000);
+  if (Number.isNaN(fromDate.getTime())) {
+    throw new Error("Invalid 'from' time.");
+  }
+  if (fromDate.getTime() >= toDate.getTime()) {
+    throw new Error("'from' must be earlier than 'to'.");
+  }
+  return {
+    from: fromDate.toISOString(),
+    to: toDate.toISOString(),
+  };
 }
 
 function consumeFixedWindowToken(params: {
@@ -564,20 +610,43 @@ app.addHook("onResponse", async (request, reply) => {
     return;
   }
   const durationMs = Date.now() - startedAtMs;
-  if (durationMs < config.slowRequestThresholdMs) {
-    return;
+  const rawPath = request.url.split("?")[0] ?? request.url;
+  const routeKey =
+    typeof request.routeOptions.url === "string" ? request.routeOptions.url : rawPath;
+
+  if (!routeKey.startsWith("/v1/analytics")) {
+    const requestParams = request.params as { id?: unknown } | undefined;
+    const sessionId =
+      routeKey.startsWith("/v1/sessions/:id") && typeof requestParams?.id === "string"
+        ? requestParams.id
+        : undefined;
+    try {
+      await appStore.recordAnalyticsEvent({
+        method: request.method,
+        path: rawPath,
+        routeKey,
+        statusCode: reply.statusCode,
+        durationMs,
+        sessionId,
+        clientKey: getClientKey(request),
+      });
+    } catch (error) {
+      request.log.warn({ err: error }, "Failed to record analytics event");
+    }
   }
 
-  request.log.warn(
-    {
-      durationMs,
-      method: request.method,
-      url: request.url,
-      statusCode: reply.statusCode,
-      clientAddress: getClientAddress(request),
-    },
-    "Slow request detected",
-  );
+  if (durationMs >= config.slowRequestThresholdMs) {
+    request.log.warn(
+      {
+        durationMs,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        clientAddress: getClientAddress(request),
+      },
+      "Slow request detected",
+    );
+  }
 });
 
 app.addHook("onClose", async () => {
@@ -812,7 +881,7 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
         if (existingAsset) {
           if (!existingAssetPayload) {
             return reply.status(500).send({
-              error: "Ideation asset payload is missing. Please click 新 Shader and retry.",
+              error: "Ideation asset payload is missing. Please click New Shader and retry.",
             });
           }
           const existingBytes = Buffer.from(existingAssetPayload.dataBase64, "base64");
@@ -823,7 +892,7 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
           if (!sameAsset) {
             return reply.status(409).send({
               error:
-                "当前需求提炼会话已绑定一份素材。可继续对话（系统会自动附带该素材）；如需更换，请先点击“新 Shader”重置。",
+                "This ideation session already has one bound asset. You can continue chatting and it will be attached automatically; click New Shader first if you want to replace it.",
             });
           }
           assetForInference = existingAsset;
@@ -853,7 +922,7 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
     const userText =
       parsed.data.content.trim().length > 0
         ? parsed.data.content.trim()
-        : "请分析刚上传的素材并给出可用于 GLSL 生成的专业提示词。";
+        : "Please analyze the uploaded asset and provide a professional prompt suitable for GLSL generation.";
 
     try {
       const ideation = await runGeminiIdeation({
@@ -1032,7 +1101,7 @@ app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
 
     try {
       const optimizeUserMessage = [
-        "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
+        "Please modify the current GLSL based on the optimization guidance below. Prioritize core fixes while preserving already-correct parts as much as possible.",
         parsed.data.optimizePrompt,
       ]
         .filter(Boolean)
@@ -1138,7 +1207,7 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
       });
 
       const optimizeUserMessage = [
-        "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
+        "Please modify the current GLSL based on the optimization guidance below. Prioritize core fixes while preserving already-correct parts as much as possible.",
         optimize.optimizePrompt,
       ]
         .filter(Boolean)
@@ -1260,7 +1329,7 @@ app.post("/v1/favorites", async (request, reply) => {
   const useManualNaming = Boolean(manualName);
 
   let naming: { name: string; promptPreview: string } = {
-    name: manualName || "未命名Shader",
+    name: manualName || "Untitled Shader",
     promptPreview: manualPromptPreview || parsed.data.sourcePrompt.slice(0, 280),
   };
   if (!useManualNaming) {
@@ -1310,6 +1379,97 @@ app.post("/v1/favorites/:id/archive", async (request, reply) => {
   return reply.status(410).send({
     error: "Favorite delete/archive is disabled in public gallery mode.",
   });
+});
+
+app.get("/v1/logs/generations", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "logs-generations-list", "light")) {
+    return;
+  }
+  const parsed = generationLogsQuery.safeParse(request.query ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+
+  const result = await appStore.listGenerationLogs({
+    limit: parsed.data.limit,
+    offset: parsed.data.offset,
+  });
+  return reply.send({
+    total: result.total,
+    limit: parsed.data.limit,
+    offset: parsed.data.offset,
+    items: result.items,
+  });
+});
+
+app.get("/v1/logs/generations/:id", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "logs-generations-detail", "light")) {
+    return;
+  }
+  const parsedParams = generationLogParams.safeParse(request.params);
+  if (!parsedParams.success) {
+    return reply.status(400).send({ error: parsedParams.error.flatten() });
+  }
+  const detail = await appStore.getGenerationLogDetail(parsedParams.data.id);
+  if (!detail) {
+    return reply.status(404).send({ error: "Generation log not found." });
+  }
+  return reply.send({ item: detail });
+});
+
+app.get("/v1/analytics/overview", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "analytics-overview", "light")) {
+    return;
+  }
+  const parsed = analyticsOverviewQuery.safeParse(request.query ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  try {
+    const range = resolveAnalyticsRange({
+      from: parsed.data.from,
+      to: parsed.data.to,
+      defaultHours: 24,
+    });
+    const overview = await appStore.getAnalyticsOverview(range);
+    return reply.send({ overview });
+  } catch (error) {
+    return reply.status(400).send({
+      error: error instanceof Error ? error.message : "Invalid analytics range.",
+    });
+  }
+});
+
+app.get("/v1/analytics/timeseries", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "analytics-timeseries", "light")) {
+    return;
+  }
+  const parsed = analyticsTimeseriesQuery.safeParse(request.query ?? {});
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  try {
+    const range = resolveAnalyticsRange({
+      from: parsed.data.from,
+      to: parsed.data.to,
+      defaultHours: parsed.data.bucket === "hour" ? 24 : 24 * 30,
+    });
+    const items = await appStore.getAnalyticsTimeseries({
+      from: range.from,
+      to: range.to,
+      bucket: parsed.data.bucket,
+    });
+    return reply.send({
+      from: range.from,
+      to: range.to,
+      bucket: parsed.data.bucket,
+      items,
+    });
+  } catch (error) {
+    return reply.status(400).send({
+      error: error instanceof Error ? error.message : "Invalid analytics range.",
+    });
+  }
 });
 
 app.get("/v1/sessions/:id/revisions/latest", async (request, reply) => {

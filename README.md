@@ -1,158 +1,134 @@
-# PrismFlow 使用说明（给第一次使用的朋友）
+# PrismFlow User Guide
 
-## 这是什么
+PrismFlow is an online GLSL shader generation and iteration tool.
+You describe a visual idea in plain language, and PrismFlow generates shader code with live preview.
 
-PrismFlow 是一个在线 Shader 生成与迭代工具。  
-你只需要输入一句话描述想要的视觉效果，它就会生成可实时预览的 GLSL 动效代码。
-
-## 使用链接：
-https://prismflow.duckdns.org/
-
-适合人群：
-
-- 设计师
-- 动效创作者
-- 想快速试验视觉风格的同学
-
-不需要会编程也可以用。
+This guide is written for first-time users with no coding background.
 
 ---
 
-## 3 分钟上手
+## What Is PrismFlow?
 
-1. 打开体验链接（你拿到的那个网页地址）。
-2. 先点击 `打开需求提炼 Chat`（推荐）。
-3. 在需求提炼 Chat 里描述你想要的效果（可上传 1 张图片或 1 段视频）。
-4. 点 `确认并填入主描述`，把提炼后的提示词带回主输入框。
-5. 点击 `发送`，等待生成结果。
-6. 在右侧预览效果，觉得不错就点星标收藏。
+PrismFlow helps you:
+- Turn visual ideas into animated shaders quickly
+- Iterate results with AI-assisted optimization
+- Save and browse works in a public gallery
 
-如果你不想走提炼流程，也可以直接在主输入框里写提示词，例如：  
-   `蓝色流动能量，节奏慢，带轻微辉光`
-
----
-
-## 需求提炼 Chat（推荐先用）
-
-这是 PrismFlow 最重要的提效功能之一，特别适合“脑子里有感觉，但说不清”的场景。
-
-它能做什么：
-
-- 把你模糊的描述整理成更可执行的提示词
-- 支持结合参考图/视频做风格提炼
-- 降低“生成结果都很像、效果不对味”的概率
-
-怎么用（超简版）：
-
-1. 点击 `打开需求提炼 Chat`。
-2. 输入你的需求，或上传素材后直接发送。
-3. 等回复后，点击 `确认并填入主描述`。
-4. 回到主界面点击 `发送` 生成 Shader。
+Best for:
+- Designers
+- Motion artists
+- Visual experimenters
 
 ---
 
-## 主要功能（简单版）
+## Quick Start (3 Minutes)
 
-- `打开需求提炼 Chat`：先把模糊想法提炼成更好用的提示词（支持 1 图/1 视频）。
-- `发送`：按你的描述生成 Shader。
-- `并行生成数量`：一次生成多份结果，方便“抽卡”挑最好看的。
-- `新 Shader`：清空上下文，从全新思路开始。
-- `代码debug`：如果代码报错，自动尝试修复。
-- `一键优化`：基于当前结果继续打磨（细节、层次、节奏等）。
-- `收藏页`：查看公共收藏作品。
+1. Open the PrismFlow link you received.
+2. Click `Open Ideation Chat` (recommended).
+3. Describe your target effect in chat (you can upload 1 image or 1 video).
+4. Click `Confirm & Fill Main Prompt`.
+5. Back on the main panel, click `Send`.
+6. Preview the result on the right. If you like it, click the star to favorite it.
 
-说明：
-
-- 收藏页是公共广场，大家都能看见。
-- 公共收藏不支持重命名和删除（这是产品规则，不是故障）。
+You can also skip ideation and type directly in the main prompt box.
 
 ---
 
-## 常见问题与处理
+## Most Important Feature: Ideation Chat
 
-### 1) 出现：`Another request is already processing for this session. Please wait and retry.`
+If you have a vague visual feeling but cannot describe it precisely, start with Ideation Chat.
 
-含义：当前会话里同时运行的任务太多了。  
-处理：
+What it does:
+- Refines rough ideas into better GLSL prompts
+- Uses your image/video reference to improve quality
+- Reduces random or repetitive outputs
 
-- 等 5-15 秒再点一次。
-- 把“并行生成数量”先调低一点再试。
-
----
-
-### 2) 出现：`Too many requests ...` 或状态码 `429`
-
-含义：短时间点击太频繁，触发了防刷保护。  
-处理：
-
-- 按提示等待几秒到几十秒再试。
-- 不要连续狂点同一个按钮。
+Recommended workflow:
+1. Open Ideation Chat
+2. Chat and refine
+3. Confirm and fill main prompt
+4. Generate in main panel
 
 ---
 
-### 3) 出现：`GEMINI_API_KEY/OPENAI_API_KEY is missing for ideation flow.`
+## Core Features (Simple)
 
-含义：服务器端配置缺失，不是你的操作问题。  
-处理：
+- `Open Ideation Chat`: refine your request first (supports 1 image / 1 video)
+- `Send`: generate shader code from your prompt
+- `Parallel Count`: generate multiple candidates at once
+- `New Shader`: reset context and start from scratch
+- `Code Debug`: auto-fix problematic GLSL
+- `One-Click Optimize`: improve current result with screenshot + context
+- `Logs`: browse generation logs
+- `Favorites`: browse the public favorites gallery
 
-- 直接联系维护者（见本文末联系方式）。
-
----
-
-### 4) 页面一直转圈、没有结果，或提示 `Internal server error`
-
-含义：可能是网络抖动或服务端临时异常。  
-处理：
-
-- 刷新页面后重试一次。
-- 仍不行就把报错截图发给维护者。
+Notes:
+- Favorites are public.
+- Public favorites cannot be renamed or deleted.
 
 ---
 
-### 5) 生成结果不符合预期（看起来都很像）
+## Common Errors and What They Mean
 
-这不是“坏掉”，更多是提示词不够具体。  
-建议：
+### 1) `Another request is already processing for this session. Please wait and retry.`
 
-- 写清楚颜色、节奏、构图、亮度、细节偏好。
-- 先生成一轮，再用 `一键优化` 明确补充意见。
+Meaning:
+- Too many heavy tasks are running in the same session.
+
+What to do:
+- Wait 5-15 seconds, then retry.
+- Lower `Parallel Count` if needed.
+
+### 2) `Too many requests` / HTTP `429`
+
+Meaning:
+- You hit rate limits by clicking too frequently.
+
+What to do:
+- Wait for the cooldown, then retry.
+- Avoid repeated rapid clicks.
+
+### 3) `GEMINI_API_KEY/OPENAI_API_KEY is missing for ideation flow.`
+
+Meaning:
+- Server-side key/config issue.
+
+What to do:
+- Report it in the Discord group (link below).
+
+### 4) `Internal server error` or request timeout
+
+Meaning:
+- Temporary server/network issue.
+
+What to do:
+- Refresh and retry once.
+- If it persists, report with screenshot and error text.
+
+### 5) `Session not found`
+
+Meaning:
+- Your session expired or became invalid.
+
+What to do:
+- Refresh the page and start a new session.
 
 ---
 
-### 6) 提示 `Session not found`
+## If You Need Help
 
-含义：页面会话已过期或中断。  
-处理：
+Please join our Discord discussion group:
 
-- 直接刷新页面，重新开始即可。
+- https://discord.gg/8kS3jjHjD
 
----
-
-## 提交问题时，建议附上这些信息
-
-为了更快帮你解决问题，建议你同时提供：
-
-- 你当时点击了什么按钮（一步步描述）
-- 报错原文（尽量完整）
-- 截图
-- 大概时间（例如：今天 15:20 左右）
+When reporting an issue, include:
+- What you clicked (step by step)
+- Full error text
+- Screenshot
+- Approximate time
 
 ---
 
-## 联系方式（遇到难以解决的问题）
+## For Developers
 
-- QQ：`530445245`
-- 邮箱：`530445245@qq.com`
-
----
-
-## 使用提醒
-
-- 收藏页是公共展示区，请不要上传敏感或私密内容。
-- 若你只是体验，不需要安装任何软件，不需要懂代码。
-
----
-
-## 给开发者的补充
-
-如果你是开发者，部署与技术文档在 `docs/` 目录（如 `M1_NEON_R2_DO_PLAYBOOK.md`）。
+Technical and deployment docs are in `docs/` (for example `M1_NEON_R2_DO_PLAYBOOK.md`).

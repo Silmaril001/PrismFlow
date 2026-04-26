@@ -223,7 +223,7 @@ function parseIdeationJson(rawText: string): { analysis: string; glslPrompt: str
       const glslPrompt = typeof parsed.glsl_prompt === "string" ? parsed.glsl_prompt.trim() : "";
       if (analysis || glslPrompt) {
         return {
-          analysis: analysis || "模型未返回分析字段。",
+          analysis: analysis || "Model did not return an analysis field.",
           glslPrompt: glslPrompt || analysis || value.trim(),
         };
       }
@@ -247,7 +247,7 @@ function parseIdeationJson(rawText: string): { analysis: string; glslPrompt: str
   }
 
   return {
-    analysis: "模型返回非 JSON，已按原文兜底。",
+    analysis: "Model returned non-JSON output. Using raw text fallback.",
     glslPrompt: trimmed,
   };
 }
@@ -368,7 +368,9 @@ export async function runGeminiIdeation(
 
   const systemPrompt = buildIdeationSystemPrompt();
   const contents = mapHistoryToGeminiContents(request.history);
-  const userParts: GeminiPart[] = [{ text: request.userMessage.trim() || "请继续细化上一次需求。" }];
+  const userParts: GeminiPart[] = [
+    { text: request.userMessage.trim() || "Please continue refining the previous request." },
+  ];
   const isVideoAsset = Boolean(request.asset && isVideoMimeType(request.asset.mimeType));
 
   if (request.asset) {
@@ -378,7 +380,7 @@ export async function runGeminiIdeation(
         request.asset.dataBase64,
       );
       userParts.push({
-        text: `补充：输入素材为视频。服务端已自动按每秒 ${config.geminiVideoFrameFps} 帧抽取 ${frameParts.length} 张关键帧用于分析。`,
+        text: `Additional note: input asset is a video. The server auto-extracted ${frameParts.length} key frame(s) at ${config.geminiVideoFrameFps} fps for analysis.`,
       });
       userParts.push(...frameParts);
     } else {

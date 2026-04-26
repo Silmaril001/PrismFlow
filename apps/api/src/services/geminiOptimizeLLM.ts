@@ -207,7 +207,7 @@ function parseOptimizeJson(rawText: string): { analysis: string; optimizePrompt:
         typeof parsed.optimize_prompt === "string" ? parsed.optimize_prompt.trim() : "";
       if (analysis || optimizePrompt) {
         return {
-          analysis: analysis || "模型未返回分析字段。",
+          analysis: analysis || "Model did not return an analysis field.",
           optimizePrompt: optimizePrompt || analysis || value.trim(),
         };
       }
@@ -231,7 +231,7 @@ function parseOptimizeJson(rawText: string): { analysis: string; optimizePrompt:
   }
 
   return {
-    analysis: "模型返回非 JSON，已按原文兜底。",
+    analysis: "Model returned non-JSON output. Using raw text fallback.",
     optimizePrompt: trimmed,
   };
 }
@@ -347,18 +347,18 @@ function buildUserText(targetPrompt: string, currentCode: string, userInstructio
   const userInstructionSection =
     normalizedInstruction.length > 0
       ? [
-          "用户补充修改意见（优先级最高）：",
+          "User additional instruction (highest priority):",
           normalizedInstruction,
-          "执行规则：若该意见与参考图/视频冲突，以用户补充修改意见为准。",
+          "Execution rule: if this instruction conflicts with reference image/video, prioritize the user additional instruction.",
         ].join("\n")
-      : "用户补充修改意见：无。请你结合目标描述、截图、素材和当前代码自主给出最佳优化方案。";
+      : "User additional instruction: none. Please determine the best optimization plan using target description, screenshot, asset, and current code.";
 
   return [
-    "请对照目标与当前结果，输出优化建议。",
-    `目标描述：\n${normalizedPrompt || "（空）"}`,
+    "Please compare the target and current result, then output optimization guidance.",
+    `Target Description:\n${normalizedPrompt || "(empty)"}`,
     userInstructionSection,
-    `当前 GLSL 代码：\n${codeForContext || "（空）"}`,
-    "已附带当前结果在 t=2 秒的截图，请以截图和代码共同判断问题。",
+    `Current GLSL Code:\n${codeForContext || "(empty)"}`,
+    "A screenshot at t=2s for the current result is attached. Please diagnose based on both screenshot and code.",
   ].join("\n\n");
 }
 
@@ -391,12 +391,12 @@ export async function runGeminiOptimize(
         request.ideationAsset.dataBase64,
       );
       userParts.push({
-        text: `补充参考：需求提炼素材是视频，已自动抽取 ${frameParts.length} 帧。`,
+        text: `Additional reference: ideation asset is a video. ${frameParts.length} frame(s) were auto-extracted.`,
       });
       userParts.push(...frameParts);
     } else {
       userParts.push({
-        text: "补充参考：需求提炼素材是图片。",
+        text: "Additional reference: ideation asset is an image.",
       });
       userParts.push({
         inline_data: {

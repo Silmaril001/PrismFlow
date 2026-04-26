@@ -147,10 +147,10 @@ function writeInstructionFile(params: {
     `# ${params.name}`,
     "",
     "## Prompt Preview",
-    params.promptPreview.trim() || "（空）",
+    params.promptPreview.trim() || "(empty)",
     "",
     "## Source Prompt",
-    params.sourcePrompt.trim() || "（空）",
+    params.sourcePrompt.trim() || "(empty)",
     "",
     `Saved At: ${params.createdAt}`,
   ].join("\n");

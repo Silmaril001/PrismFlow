@@ -57,8 +57,8 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
           setEditorCode(DEFAULT_NEW_FAVORITE_CODE);
           setCompiledCode(DEFAULT_NEW_FAVORITE_CODE);
           setBaselineCode(DEFAULT_NEW_FAVORITE_CODE);
-          setNameInput("新建Shader");
-          setSourcePromptInput("手动新建收藏");
+          setNameInput("New Shader");
+          setSourcePromptInput("Manually created favorite");
           setLoading(false);
         }
         return;
@@ -66,7 +66,7 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
 
       if (!favoriteId) {
         if (!cancelled) {
-          setError("缺少收藏 ID。");
+          setError("Missing favorite ID.");
           setLoading(false);
         }
         return;
@@ -79,12 +79,12 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
           setEditorCode(detail.code);
           setCompiledCode(detail.code);
           setBaselineCode(detail.code);
-          setNameInput(`${detail.name}-副本`);
-          setSourcePromptInput(detail.sourcePrompt || detail.promptPreview || "手动保存收藏");
+          setNameInput(`${detail.name} Copy`);
+          setSourcePromptInput(detail.sourcePrompt || detail.promptPreview || "Manually saved favorite");
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "收藏详情加载失败");
+          setError(err instanceof Error ? err.message : "Failed to load favorite details.");
         }
       } finally {
         if (!cancelled) {
@@ -166,7 +166,7 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
       setCompiledCode(result.code);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "代码debug失败");
+      setError(err instanceof Error ? err.message : "Code debug failed.");
     } finally {
       setDebugLoading(false);
     }
@@ -177,11 +177,11 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
     const sourcePrompt = sourcePromptInput.trim();
     const sourceCode = editorCode.trim();
     if (!finalName) {
-      setError("保存前请先填写名称。");
+      setError("Please enter a name before saving.");
       return;
     }
     if (!sourceCode) {
-      setError("保存前请先填写 GLSL 代码。");
+      setError("Please enter GLSL code before saving.");
       return;
     }
     if (saveLoading) {
@@ -200,14 +200,14 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
       });
       const result = await createFavorite({
         name: finalName,
-        sourcePrompt: sourcePrompt || "手动保存收藏",
+        sourcePrompt: sourcePrompt || "Manually saved favorite",
         promptPreview: sourcePrompt || finalName,
         code: sourceCode,
         coverImageDataUrl,
       });
-      setSaveNotice(`已保存新收藏：${result.favorite.name}`);
+      setSaveNotice(`New favorite saved: ${result.favorite.name}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存收藏失败");
+      setError(err instanceof Error ? err.message : "Failed to save favorite.");
     } finally {
       setSaveLoading(false);
     }
@@ -219,13 +219,13 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
     <main className="favorite-detail-shell">
       <header className="favorite-detail-header">
         <div>
-          <h1>{createMode ? "新建收藏" : favorite?.name || "收藏详情"}</h1>
+          <h1>{createMode ? "Create Favorite" : favorite?.name || "Favorite Details"}</h1>
           {!createMode && favorite ? <p>{new Date(favorite.createdAt).toLocaleString()}</p> : null}
-          {createMode ? <p>手动输入 GLSL，命名后保存为新收藏。</p> : null}
+          {createMode ? <p>Enter GLSL manually, then name and save it as a new favorite.</p> : null}
         </div>
       </header>
 
-      {loading ? <div className="favorites-empty">加载中...</div> : null}
+      {loading ? <div className="favorites-empty">Loading...</div> : null}
       {error ? <pre className="compile-error">{error}</pre> : null}
       {saveNotice ? <div className="editor-notice">{saveNotice}</div> : null}
 
@@ -246,24 +246,24 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
               onClick={() => setPaused((prev) => !prev)}
               disabled={loading || !(compiledCode || editorCode).trim()}
             >
-              {paused ? "播放" : "暂停"}
+              {paused ? "Play" : "Pause"}
             </button>
             {compileError ? <pre className="compile-error">{compileError}</pre> : null}
           </div>
 
           <div className="favorite-detail-editor-pane">
-            <div className="favorite-detail-editor-title">保存设置</div>
+            <div className="favorite-detail-editor-title">Save Settings</div>
             <div className="favorite-save-row">
               <input
                 type="text"
                 value={nameInput}
                 onChange={(event) => setNameInput(event.target.value)}
-                placeholder="收藏名称"
+                placeholder="Favorite name"
                 className="favorite-name-input"
                 disabled={saveLoading}
               />
               <button type="button" onClick={handleSaveAsFavorite} disabled={saveLoading || !editorCode.trim()}>
-                {saveLoading ? "保存中..." : "保存"}
+                {saveLoading ? "Saving..." : "Save"}
               </button>
             </div>
             <textarea
@@ -271,11 +271,11 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
               value={sourcePromptInput}
               onChange={(event) => setSourcePromptInput(event.target.value)}
               rows={3}
-              placeholder="用于归档的描述（可选）"
+              placeholder="Description for archiving (optional)"
               disabled={saveLoading}
             />
 
-            <div className="favorite-detail-editor-title">GLSL 代码（临时编辑，不会覆盖原收藏）</div>
+            <div className="favorite-detail-editor-title">GLSL Code (temporary edits, original favorite is unchanged)</div>
             <textarea
               className="code-editor favorite-detail-editor"
               value={editorCode}
@@ -288,17 +288,17 @@ export function FavoriteDetail(props: FavoriteDetailProps) {
                 onClick={handleRunCompile}
                 disabled={!editorCode.trim() || debugLoading}
               >
-                编译运行
+                Compile & Run
               </button>
               <button
                 type="button"
                 onClick={handleDebugCode}
                 disabled={!editorCode.trim() || debugLoading}
               >
-                {debugLoading ? "debug中..." : "代码debug"}
+                {debugLoading ? "Debugging..." : "Code Debug"}
               </button>
             </div>
-            {dirty ? <div className="editor-notice">你已修改代码，直接关闭页面会丢失这些临时改动。</div> : null}
+            {dirty ? <div className="editor-notice">You have unsaved temporary edits. Closing this page will discard them.</div> : null}
           </div>
         </section>
       ) : null}

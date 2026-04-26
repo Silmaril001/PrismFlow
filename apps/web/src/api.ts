@@ -63,6 +63,49 @@ export interface FavoriteDetail extends FavoriteSummary {
   codeFileName: string;
 }
 
+export interface GenerationLogSummary {
+  revisionId: string;
+  sessionId: string;
+  mode: Mode;
+  promptPreview: string;
+  requestedModel: string;
+  effectiveModel: string;
+  compileStatus: "pass" | "fail" | "unchecked";
+  llmLatencyMs: number;
+  createdAt: string;
+}
+
+export interface GenerationLogDetail extends GenerationLogSummary {
+  parentRevisionId: string | null;
+  prompt: string;
+  compileErrors: string[];
+  code: string;
+}
+
+export type AnalyticsBucket = "hour" | "day";
+
+export interface AnalyticsOverview {
+  from: string;
+  to: string;
+  totalRequests: number;
+  generationRequests: number;
+  generationSuccesses: number;
+  uniqueClients: number;
+  successResponses: number;
+  clientErrors: number;
+  serverErrors: number;
+  avgDurationMs: number;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucketStart: string;
+  totalRequests: number;
+  generationRequests: number;
+  generationSuccesses: number;
+  uniqueClients: number;
+  avgDurationMs: number;
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -332,4 +375,83 @@ export async function getFavoriteById(id: string): Promise<FavoriteDetail> {
     method: "GET",
   });
   return data.favorite;
+}
+
+export async function listGenerationLogs(params?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{
+  total: number;
+  limit: number;
+  offset: number;
+  items: GenerationLogSummary[];
+}> {
+  const search = new URLSearchParams();
+  if (typeof params?.limit === "number") {
+    search.set("limit", String(params.limit));
+  }
+  if (typeof params?.offset === "number") {
+    search.set("offset", String(params.offset));
+  }
+  const query = search.toString();
+  return request(`/v1/logs/generations${query ? `?${query}` : ""}`, {
+    method: "GET",
+  });
+}
+
+export async function getGenerationLogByRevisionId(revisionId: string): Promise<GenerationLogDetail> {
+  const data = await request<{ item: GenerationLogDetail }>(
+    `/v1/logs/generations/${encodeURIComponent(revisionId)}`,
+    {
+      method: "GET",
+    },
+  );
+  return data.item;
+}
+
+export async function getAnalyticsOverview(params?: {
+  from?: string;
+  to?: string;
+}): Promise<AnalyticsOverview> {
+  const search = new URLSearchParams();
+  if (params?.from) {
+    search.set("from", params.from);
+  }
+  if (params?.to) {
+    search.set("to", params.to);
+  }
+  const query = search.toString();
+  const data = await request<{ overview: AnalyticsOverview }>(
+    `/v1/analytics/overview${query ? `?${query}` : ""}`,
+    {
+      method: "GET",
+    },
+  );
+  return data.overview;
+}
+
+export async function getAnalyticsTimeseries(params?: {
+  from?: string;
+  to?: string;
+  bucket?: AnalyticsBucket;
+}): Promise<{
+  from: string;
+  to: string;
+  bucket: AnalyticsBucket;
+  items: AnalyticsTimeseriesPoint[];
+}> {
+  const search = new URLSearchParams();
+  if (params?.from) {
+    search.set("from", params.from);
+  }
+  if (params?.to) {
+    search.set("to", params.to);
+  }
+  if (params?.bucket) {
+    search.set("bucket", params.bucket);
+  }
+  const query = search.toString();
+  return request(`/v1/analytics/timeseries${query ? `?${query}` : ""}`, {
+    method: "GET",
+  });
 }

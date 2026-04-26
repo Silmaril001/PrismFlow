@@ -31,6 +31,60 @@ export interface AppStoreHealthStatus {
   detail?: string;
 }
 
+export interface GenerationLogSummary {
+  revisionId: string;
+  sessionId: string;
+  mode: Mode;
+  promptPreview: string;
+  requestedModel: string;
+  effectiveModel: string;
+  compileStatus: CompileStatus;
+  llmLatencyMs: number;
+  createdAt: string;
+}
+
+export interface GenerationLogDetail extends GenerationLogSummary {
+  parentRevisionId: string | null;
+  prompt: string;
+  compileErrors: string[];
+  code: string;
+}
+
+export interface AnalyticsEventInput {
+  method: string;
+  path: string;
+  routeKey: string;
+  statusCode: number;
+  durationMs: number;
+  sessionId?: string;
+  clientKey: string;
+  createdAt?: string;
+}
+
+export type AnalyticsBucket = "hour" | "day";
+
+export interface AnalyticsOverview {
+  from: string;
+  to: string;
+  totalRequests: number;
+  generationRequests: number;
+  generationSuccesses: number;
+  uniqueClients: number;
+  successResponses: number;
+  clientErrors: number;
+  serverErrors: number;
+  avgDurationMs: number;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucketStart: string;
+  totalRequests: number;
+  generationRequests: number;
+  generationSuccesses: number;
+  uniqueClients: number;
+  avgDurationMs: number;
+}
+
 export interface AppStore {
   provider: "memory" | "postgres";
   createSession(mode: Mode, projectId?: string): Promise<Session>;
@@ -57,6 +111,18 @@ export interface AppStore {
     asset: Omit<IdeationAsset, "id" | "createdAt"> & IdeationAssetPayload,
   ): Promise<IdeationAsset>;
   resetIdeation(sessionId: string): Promise<{ asset?: IdeationAsset }>;
+  listGenerationLogs(params: {
+    limit: number;
+    offset: number;
+  }): Promise<{ total: number; items: GenerationLogSummary[] }>;
+  getGenerationLogDetail(revisionId: string): Promise<GenerationLogDetail | undefined>;
+  recordAnalyticsEvent(input: AnalyticsEventInput): Promise<void>;
+  getAnalyticsOverview(params: { from: string; to: string }): Promise<AnalyticsOverview>;
+  getAnalyticsTimeseries(params: {
+    from: string;
+    to: string;
+    bucket: AnalyticsBucket;
+  }): Promise<AnalyticsTimeseriesPoint[]>;
   healthCheck(): Promise<AppStoreHealthStatus>;
   close(): Promise<void>;
 }
@@ -65,6 +131,34 @@ type InMemoryAssetEntry = {
   meta: IdeationAsset;
   payload: IdeationAssetPayload;
 };
+
+interface InMemoryAnalyticsEvent {
+  method: string;
+  path: string;
+  routeKey: string;
+  statusCode: number;
+  durationMs: number;
+  sessionId?: string;
+  clientKey: string;
+  createdAt: string;
+}
+
+function buildPromptPreview(prompt: string, maxLength = 140): string {
+  const singleLine = prompt.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, maxLength - 1)}…`;
+}
+
+function floorDateToBucket(date: Date, bucket: AnalyticsBucket): Date {
+  const d = new Date(date.getTime());
+  d.setUTCMinutes(0, 0, 0);
+  if (bucket === "day") {
+    d.setUTCHours(0, 0, 0, 0);
+  }
+  return d;
+}
 
 export class InMemoryStore implements AppStore {
   provider: "memory" = "memory";
@@ -75,6 +169,7 @@ export class InMemoryStore implements AppStore {
   private readonly artifactsByRevision = new Map<string, string[]>();
   private readonly ideationMessagesBySession = new Map<string, IdeationMessage[]>();
   private readonly ideationAssetBySession = new Map<string, InMemoryAssetEntry>();
+  private readonly analyticsEvents: InMemoryAnalyticsEvent[] = [];
 
   async createSession(mode: Mode, projectId = "default-project"): Promise<Session> {
     const session: Session = {
@@ -231,6 +326,188 @@ export class InMemoryStore implements AppStore {
     return { asset };
   }
 
+  async listGenerationLogs(params: {
+    limit: number;
+    offset: number;
+  }): Promise<{ total: number; items: GenerationLogSummary[] }> {
+    const revisions = [...this.revisions.values()]
+      .filter((revision) => {
+        const artifactIds = this.artifactsByRevision.get(revision.id);
+        if (!artifactIds || artifactIds.length === 0) {
+          return false;
+        }
+        return artifactIds.some((artifactId) => this.artifacts.get(artifactId)?.kind === "glsl_fragment");
+      })
+      .sort((a, b) => {
+        const timeDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        if (timeDiff !== 0) {
+          return timeDiff;
+        }
+        return b.id.localeCompare(a.id);
+      });
+
+    const total = revisions.length;
+    const items = revisions.slice(params.offset, params.offset + params.limit).map((revision) => {
+      const session = this.sessions.get(revision.sessionId);
+      return {
+        revisionId: revision.id,
+        sessionId: revision.sessionId,
+        mode: session?.mode ?? "shader_glsl",
+        promptPreview: buildPromptPreview(revision.prompt),
+        requestedModel: revision.requestedModel,
+        effectiveModel: revision.effectiveModel,
+        compileStatus: revision.compileStatus,
+        llmLatencyMs: revision.llmLatencyMs,
+        createdAt: revision.createdAt,
+      } satisfies GenerationLogSummary;
+    });
+
+    return { total, items };
+  }
+
+  async getGenerationLogDetail(revisionId: string): Promise<GenerationLogDetail | undefined> {
+    const revision = this.revisions.get(revisionId);
+    if (!revision) {
+      return undefined;
+    }
+    const session = this.sessions.get(revision.sessionId);
+    const artifact = await this.getArtifactByRevisionAndKind(revision.id, "glsl_fragment");
+    if (!artifact) {
+      return undefined;
+    }
+    return {
+      revisionId: revision.id,
+      sessionId: revision.sessionId,
+      mode: session?.mode ?? "shader_glsl",
+      parentRevisionId: revision.parentRevisionId,
+      promptPreview: buildPromptPreview(revision.prompt),
+      prompt: revision.prompt,
+      requestedModel: revision.requestedModel,
+      effectiveModel: revision.effectiveModel,
+      compileStatus: revision.compileStatus,
+      compileErrors: revision.compileErrors,
+      llmLatencyMs: revision.llmLatencyMs,
+      createdAt: revision.createdAt,
+      code: artifact.content,
+    };
+  }
+
+  async recordAnalyticsEvent(input: AnalyticsEventInput): Promise<void> {
+    this.analyticsEvents.push({
+      method: input.method,
+      path: input.path,
+      routeKey: input.routeKey,
+      statusCode: input.statusCode,
+      durationMs: input.durationMs,
+      sessionId: input.sessionId,
+      clientKey: input.clientKey,
+      createdAt: input.createdAt ?? new Date().toISOString(),
+    });
+    if (this.analyticsEvents.length > 100_000) {
+      this.analyticsEvents.splice(0, this.analyticsEvents.length - 100_000);
+    }
+  }
+
+  async getAnalyticsOverview(params: { from: string; to: string }): Promise<AnalyticsOverview> {
+    const fromTs = new Date(params.from).getTime();
+    const toTs = new Date(params.to).getTime();
+    const scoped = this.analyticsEvents.filter((event) => {
+      const ts = new Date(event.createdAt).getTime();
+      return ts >= fromTs && ts < toTs;
+    });
+
+    const totalRequests = scoped.length;
+    const generationScoped = scoped.filter(
+      (event) => event.routeKey === "/v1/sessions/:id/messages",
+    );
+    const generationRequests = generationScoped.length;
+    const generationSuccesses = generationScoped.filter(
+      (event) => event.statusCode >= 200 && event.statusCode < 300,
+    ).length;
+    const uniqueClients = new Set(scoped.map((event) => event.clientKey)).size;
+    const successResponses = scoped.filter(
+      (event) => event.statusCode >= 200 && event.statusCode < 300,
+    ).length;
+    const clientErrors = scoped.filter(
+      (event) => event.statusCode >= 400 && event.statusCode < 500,
+    ).length;
+    const serverErrors = scoped.filter((event) => event.statusCode >= 500).length;
+    const avgDurationMs =
+      totalRequests > 0
+        ? Math.round(scoped.reduce((sum, event) => sum + event.durationMs, 0) / totalRequests)
+        : 0;
+
+    return {
+      from: new Date(fromTs).toISOString(),
+      to: new Date(toTs).toISOString(),
+      totalRequests,
+      generationRequests,
+      generationSuccesses,
+      uniqueClients,
+      successResponses,
+      clientErrors,
+      serverErrors,
+      avgDurationMs,
+    };
+  }
+
+  async getAnalyticsTimeseries(params: {
+    from: string;
+    to: string;
+    bucket: AnalyticsBucket;
+  }): Promise<AnalyticsTimeseriesPoint[]> {
+    const fromTs = new Date(params.from).getTime();
+    const toTs = new Date(params.to).getTime();
+    const scoped = this.analyticsEvents.filter((event) => {
+      const ts = new Date(event.createdAt).getTime();
+      return ts >= fromTs && ts < toTs;
+    });
+
+    const bucketMap = new Map<
+      string,
+      {
+        totalRequests: number;
+        generationRequests: number;
+        generationSuccesses: number;
+        uniqueClients: Set<string>;
+        durationSum: number;
+      }
+    >();
+
+    for (const event of scoped) {
+      const bucketStart = floorDateToBucket(new Date(event.createdAt), params.bucket).toISOString();
+      const target = bucketMap.get(bucketStart) ?? {
+        totalRequests: 0,
+        generationRequests: 0,
+        generationSuccesses: 0,
+        uniqueClients: new Set<string>(),
+        durationSum: 0,
+      };
+      target.totalRequests += 1;
+      if (event.routeKey === "/v1/sessions/:id/messages") {
+        target.generationRequests += 1;
+        if (event.statusCode >= 200 && event.statusCode < 300) {
+          target.generationSuccesses += 1;
+        }
+      }
+      target.uniqueClients.add(event.clientKey);
+      target.durationSum += event.durationMs;
+      bucketMap.set(bucketStart, target);
+    }
+
+    return [...bucketMap.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([bucketStart, value]) => ({
+        bucketStart,
+        totalRequests: value.totalRequests,
+        generationRequests: value.generationRequests,
+        generationSuccesses: value.generationSuccesses,
+        uniqueClients: value.uniqueClients.size,
+        avgDurationMs:
+          value.totalRequests > 0 ? Math.round(value.durationSum / value.totalRequests) : 0,
+      }));
+  }
+
   async healthCheck(): Promise<AppStoreHealthStatus> {
     return {
       ok: true,
@@ -295,6 +572,35 @@ interface IdeationAssetRow {
   object_key: string | null;
   object_url: string | null;
   created_at: string | Date;
+}
+
+interface GenerationLogSummaryRow extends RevisionRow {
+  mode: string;
+}
+
+interface GenerationLogDetailRow extends RevisionRow {
+  mode: string;
+  code: string;
+}
+
+interface AnalyticsOverviewRow {
+  total_requests: string;
+  generation_requests: string;
+  generation_successes: string;
+  unique_clients: string;
+  success_responses: string;
+  client_errors: string;
+  server_errors: string;
+  avg_duration_ms: number | null;
+}
+
+interface AnalyticsTimeseriesRow {
+  bucket_start: string | Date;
+  total_requests: string;
+  generation_requests: string;
+  generation_successes: string;
+  unique_clients: string;
+  avg_duration_ms: number | null;
 }
 
 function toIso(value: string | Date): string {
@@ -407,6 +713,26 @@ class PostgresStore implements AppStore {
       );
       CREATE INDEX IF NOT EXISTS idx_revisions_session_created_at
         ON revisions(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_revisions_created_at
+        ON revisions(created_at DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS analytics_events (
+        id BIGSERIAL PRIMARY KEY,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        route_key TEXT NOT NULL,
+        status_code INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        session_id TEXT,
+        client_key TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at
+        ON analytics_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_analytics_events_route_created
+        ON analytics_events(route_key, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_analytics_events_client_created
+        ON analytics_events(client_key, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS artifacts (
         id TEXT PRIMARY KEY,
@@ -828,6 +1154,217 @@ class PostgresStore implements AppStore {
     } finally {
       client.release();
     }
+  }
+
+  async listGenerationLogs(params: {
+    limit: number;
+    offset: number;
+  }): Promise<{ total: number; items: GenerationLogSummary[] }> {
+    const [countResult, rowsResult] = await Promise.all([
+      this.pool.query<{ total: string }>(
+        `
+          SELECT COUNT(*)::bigint AS total
+          FROM revisions r
+          WHERE EXISTS (
+            SELECT 1
+            FROM artifacts a
+            WHERE a.revision_id = r.id
+              AND a.kind = 'glsl_fragment'
+          )
+        `,
+      ),
+      this.pool.query<GenerationLogSummaryRow>(
+        `
+          SELECT r.id, r.session_id, r.parent_revision_id, r.prompt, r.llm_model,
+                 r.requested_model, r.effective_model, r.fallback_used, r.llm_latency_ms,
+                 r.compile_status, r.compile_errors, r.created_at,
+                 s.mode
+          FROM revisions r
+          JOIN sessions s ON s.id = r.session_id
+          WHERE EXISTS (
+            SELECT 1
+            FROM artifacts a
+            WHERE a.revision_id = r.id
+              AND a.kind = 'glsl_fragment'
+          )
+          ORDER BY r.created_at DESC, r.id DESC
+          LIMIT $1 OFFSET $2
+        `,
+        [params.limit, params.offset],
+      ),
+    ]);
+
+    const total = Number.parseInt(countResult.rows[0]?.total ?? "0", 10) || 0;
+    const items = rowsResult.rows.map((row) => {
+      const revision = mapRevisionRow(row);
+      return {
+        revisionId: revision.id,
+        sessionId: revision.sessionId,
+        mode: row.mode as Mode,
+        promptPreview: buildPromptPreview(revision.prompt),
+        requestedModel: revision.requestedModel,
+        effectiveModel: revision.effectiveModel,
+        compileStatus: revision.compileStatus,
+        llmLatencyMs: revision.llmLatencyMs,
+        createdAt: revision.createdAt,
+      } satisfies GenerationLogSummary;
+    });
+
+    return { total, items };
+  }
+
+  async getGenerationLogDetail(revisionId: string): Promise<GenerationLogDetail | undefined> {
+    const result = await this.pool.query<GenerationLogDetailRow>(
+      `
+        SELECT r.id, r.session_id, r.parent_revision_id, r.prompt, r.llm_model,
+               r.requested_model, r.effective_model, r.fallback_used, r.llm_latency_ms,
+               r.compile_status, r.compile_errors, r.created_at,
+               s.mode,
+               a.content AS code
+        FROM revisions r
+        JOIN sessions s ON s.id = r.session_id
+        JOIN LATERAL (
+          SELECT content
+          FROM artifacts a
+          WHERE a.revision_id = r.id
+            AND a.kind = 'glsl_fragment'
+          ORDER BY a.created_at DESC, a.id DESC
+          LIMIT 1
+        ) a ON TRUE
+        WHERE r.id = $1
+        LIMIT 1
+      `,
+      [revisionId],
+    );
+
+    if (!result.rowCount) {
+      return undefined;
+    }
+    const row = result.rows[0]!;
+    const revision = mapRevisionRow(row);
+    return {
+      revisionId: revision.id,
+      sessionId: revision.sessionId,
+      mode: row.mode as Mode,
+      parentRevisionId: revision.parentRevisionId,
+      promptPreview: buildPromptPreview(revision.prompt),
+      prompt: revision.prompt,
+      requestedModel: revision.requestedModel,
+      effectiveModel: revision.effectiveModel,
+      compileStatus: revision.compileStatus,
+      compileErrors: revision.compileErrors,
+      llmLatencyMs: revision.llmLatencyMs,
+      createdAt: revision.createdAt,
+      code: row.code,
+    };
+  }
+
+  async recordAnalyticsEvent(input: AnalyticsEventInput): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO analytics_events (
+          method, path, route_key, status_code, duration_ms,
+          session_id, client_key, created_at
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8
+        )
+      `,
+      [
+        input.method,
+        input.path,
+        input.routeKey,
+        input.statusCode,
+        input.durationMs,
+        input.sessionId ?? null,
+        input.clientKey,
+        input.createdAt ?? new Date().toISOString(),
+      ],
+    );
+  }
+
+  async getAnalyticsOverview(params: { from: string; to: string }): Promise<AnalyticsOverview> {
+    const result = await this.pool.query<AnalyticsOverviewRow>(
+      `
+        SELECT
+          COUNT(*)::bigint AS total_requests,
+          COUNT(*) FILTER (
+            WHERE route_key = '/v1/sessions/:id/messages'
+          )::bigint AS generation_requests,
+          COUNT(*) FILTER (
+            WHERE route_key = '/v1/sessions/:id/messages'
+              AND status_code BETWEEN 200 AND 299
+          )::bigint AS generation_successes,
+          COUNT(DISTINCT client_key)::bigint AS unique_clients,
+          COUNT(*) FILTER (
+            WHERE status_code BETWEEN 200 AND 299
+          )::bigint AS success_responses,
+          COUNT(*) FILTER (
+            WHERE status_code BETWEEN 400 AND 499
+          )::bigint AS client_errors,
+          COUNT(*) FILTER (
+            WHERE status_code >= 500
+          )::bigint AS server_errors,
+          ROUND(AVG(duration_ms))::int AS avg_duration_ms
+        FROM analytics_events
+        WHERE created_at >= $1::timestamptz
+          AND created_at < $2::timestamptz
+      `,
+      [params.from, params.to],
+    );
+
+    const row = result.rows[0];
+    return {
+      from: new Date(params.from).toISOString(),
+      to: new Date(params.to).toISOString(),
+      totalRequests: Number.parseInt(row?.total_requests ?? "0", 10) || 0,
+      generationRequests: Number.parseInt(row?.generation_requests ?? "0", 10) || 0,
+      generationSuccesses: Number.parseInt(row?.generation_successes ?? "0", 10) || 0,
+      uniqueClients: Number.parseInt(row?.unique_clients ?? "0", 10) || 0,
+      successResponses: Number.parseInt(row?.success_responses ?? "0", 10) || 0,
+      clientErrors: Number.parseInt(row?.client_errors ?? "0", 10) || 0,
+      serverErrors: Number.parseInt(row?.server_errors ?? "0", 10) || 0,
+      avgDurationMs: row?.avg_duration_ms ?? 0,
+    };
+  }
+
+  async getAnalyticsTimeseries(params: {
+    from: string;
+    to: string;
+    bucket: AnalyticsBucket;
+  }): Promise<AnalyticsTimeseriesPoint[]> {
+    const bucketSql = params.bucket === "day" ? "day" : "hour";
+    const result = await this.pool.query<AnalyticsTimeseriesRow>(
+      `
+        SELECT
+          date_trunc('${bucketSql}', created_at) AS bucket_start,
+          COUNT(*)::bigint AS total_requests,
+          COUNT(*) FILTER (
+            WHERE route_key = '/v1/sessions/:id/messages'
+          )::bigint AS generation_requests,
+          COUNT(*) FILTER (
+            WHERE route_key = '/v1/sessions/:id/messages'
+              AND status_code BETWEEN 200 AND 299
+          )::bigint AS generation_successes,
+          COUNT(DISTINCT client_key)::bigint AS unique_clients,
+          ROUND(AVG(duration_ms))::int AS avg_duration_ms
+        FROM analytics_events
+        WHERE created_at >= $1::timestamptz
+          AND created_at < $2::timestamptz
+        GROUP BY 1
+        ORDER BY 1 ASC
+      `,
+      [params.from, params.to],
+    );
+
+    return result.rows.map((row) => ({
+      bucketStart: toIso(row.bucket_start),
+      totalRequests: Number.parseInt(row.total_requests, 10) || 0,
+      generationRequests: Number.parseInt(row.generation_requests, 10) || 0,
+      generationSuccesses: Number.parseInt(row.generation_successes, 10) || 0,
+      uniqueClients: Number.parseInt(row.unique_clients, 10) || 0,
+      avgDurationMs: row.avg_duration_ms ?? 0,
+    }));
   }
 
   async healthCheck(): Promise<AppStoreHealthStatus> {

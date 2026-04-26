@@ -14,7 +14,8 @@
     "build:api": "npm --workspace @shader-mvp/api run build",
     "build:web": "npm --workspace @shader-mvp/web run build",
     "build:web:online": "VITE_API_BASE_URL=https://prismflow.duckdns.org npm --workspace @shader-mvp/web run build",
-    "start:oneclick": "bash ./scripts/one-click-start.sh"
+    "start:oneclick": "bash ./scripts/one-click-start.sh",
+    "start:oneclick:logs": "bash ./scripts/one-click-start-logs.sh"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5"

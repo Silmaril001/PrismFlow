@@ -93,15 +93,15 @@ interface SlotFavoriteMeta {
   name: string;
 }
 
-const INITIAL_PROMPT = "做一个蓝色能量流动的全屏 Shader，节奏平稳。";
+const INITIAL_PROMPT = "Create a full-screen shader with flowing blue energy and a calm rhythm.";
 const DEFAULT_PREVIEW_WIDTH = 960;
 const DEFAULT_PREVIEW_HEIGHT = 540;
 const MIN_PARALLEL_COUNT = 1;
 const MAX_PARALLEL_COUNT = 10;
 const DEFAULT_PARALLEL_COUNT = 5;
 const DEFAULT_USER_MODEL = "gpt-5.5";
-const SHADER_MODE_TITLE = "程序化 Shader 模式 (GLSL)";
-const SHADER_MODE_HINT = "适用于发光动效、消融、流体规律、全息扫描等数学驱动视觉。";
+const SHADER_MODE_TITLE = "Procedural Shader Mode (GLSL)";
+const SHADER_MODE_HINT = "Best for mathematically driven visuals like glow effects, dissolve, fluid motion, and holographic scans.";
 const MAX_REFERENCE_IMAGES = 5;
 const MAX_REFERENCE_IMAGE_BYTES = 1_500_000;
 const MAX_REFERENCE_IMAGE_DIMENSION = 1536;
@@ -121,7 +121,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("读取图片失败。"));
+    reader.onerror = () => reject(new Error("Failed to read image."));
     reader.readAsDataURL(file);
   });
 }
@@ -130,14 +130,14 @@ function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("解析图片失败。"));
+    img.onerror = () => reject(new Error("Failed to decode image."));
     img.src = dataUrl;
   });
 }
 
 async function prepareReferenceImage(file: File): Promise<ReferenceImage> {
   if (!file.type.startsWith("image/")) {
-    throw new Error("仅支持图片粘贴。");
+    throw new Error("Only image paste is supported.");
   }
 
   const sourceDataUrl = await readFileAsDataUrl(file);
@@ -154,7 +154,7 @@ async function prepareReferenceImage(file: File): Promise<ReferenceImage> {
   canvas.height = targetHeight;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    throw new Error("浏览器不支持图片预处理。");
+    throw new Error("Browser does not support image preprocessing.");
   }
   ctx.drawImage(sourceImage, 0, 0, targetWidth, targetHeight);
 
@@ -179,7 +179,7 @@ async function prepareReferenceImage(file: File): Promise<ReferenceImage> {
   }
 
   if (bytes > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error("图片过大，请粘贴更小的图片（单张建议不超过 1.5MB）。");
+    throw new Error("Image is too large. Please paste a smaller image (recommended <= 1.5MB each).");
   }
 
   return {
@@ -215,15 +215,15 @@ async function prepareIdeationAsset(file: File): Promise<PendingIdeationAsset> {
   const isImage = file.type.startsWith("image/");
   const isVideo = file.type.startsWith("video/");
   if (!isImage && !isVideo) {
-    throw new Error("仅支持上传图片或视频。");
+    throw new Error("Only image or video uploads are supported.");
   }
   if (file.size > MAX_IDEATION_ASSET_BYTES) {
-    throw new Error("素材过大，请控制在 25MB 以内。");
+    throw new Error("Asset is too large. Please keep it under 25MB.");
   }
   const dataUrl = await readFileAsDataUrl(file);
   const bytes = estimateDataUrlBytes(dataUrl);
   if (bytes > MAX_IDEATION_ASSET_BYTES) {
-    throw new Error("素材编码后超过 25MB，请换更小文件。");
+    throw new Error("Encoded asset exceeds 25MB. Please use a smaller file.");
   }
   return {
     fileName: file.name,
@@ -316,7 +316,7 @@ export function App() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "会话创建失败");
+          setError(err instanceof Error ? err.message : "Failed to create session.");
         }
       } finally {
         if (!cancelled) {
@@ -366,6 +366,10 @@ export function App() {
     window.open("/favorites", "_blank", "noopener,noreferrer");
   }
 
+  function handleOpenLogsPage() {
+    window.open("/logs", "_blank", "noopener,noreferrer");
+  }
+
   async function syncIdeationLinkedReferences(dataUrls: string[]) {
     const limited = dataUrls.slice(0, MAX_REFERENCE_IMAGES);
     const prepared = await Promise.all(limited.map((dataUrl) => prepareLinkedReferenceImage(dataUrl)));
@@ -375,7 +379,7 @@ export function App() {
       return [...manual.slice(0, slotsForManual), ...prepared];
     });
     if (dataUrls.length > limited.length) {
-      setError(`提炼素材联动参考图最多展示 ${MAX_REFERENCE_IMAGES} 张，已自动截断。`);
+      setError(`At most ${MAX_REFERENCE_IMAGES} linked reference images can be shown. Extra images were truncated.`);
     }
   }
 
@@ -402,13 +406,13 @@ export function App() {
           ...prev,
           {
             role: "assistant",
-            text: "需求提炼弹窗的聊天记录和上传素材已重置。",
+            text: "Ideation chat history and uploaded asset have been reset.",
           },
         ]);
       }
     } catch (err) {
       if (!silent) {
-        setError(err instanceof Error ? err.message : "重置需求提炼会话失败。");
+        setError(err instanceof Error ? err.message : "Failed to reset ideation session.");
       }
     }
   }
@@ -431,7 +435,9 @@ export function App() {
       return;
     }
     if (ideationAssetLocked) {
-      setError("当前需求提炼会话已绑定素材。你可以继续对话，系统会自动附带该素材；如需更换请点击“新 Shader”。");
+      setError(
+        "This ideation session already has a bound asset. You can keep chatting and the asset will be attached automatically; click \"New Shader\" to replace it.",
+      );
       return;
     }
 
@@ -440,7 +446,7 @@ export function App() {
       setPendingIdeationAsset(prepared);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "素材处理失败。");
+      setError(err instanceof Error ? err.message : "Asset processing failed.");
     }
   }
 
@@ -478,10 +484,10 @@ export function App() {
       try {
         await syncIdeationLinkedReferences(result.linkedReferenceImages);
       } catch {
-        setError("提炼素材已上传，但联动参考图同步失败。");
+        setError("Ideation asset uploaded, but linked reference images failed to sync.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "需求提炼失败。");
+      setError(err instanceof Error ? err.message : "Ideation failed.");
     } finally {
       setIdeationLoading(false);
     }
@@ -504,7 +510,9 @@ export function App() {
     event.preventDefault();
 
     if (ideationAssetLocked) {
-      setError("当前需求提炼会话已绑定素材。你可以继续对话，系统会自动附带该素材；如需更换请点击“新 Shader”。");
+      setError(
+        "This ideation session already has a bound asset. You can keep chatting and the asset will be attached automatically; click \"New Shader\" to replace it.",
+      );
       return;
     }
 
@@ -513,11 +521,11 @@ export function App() {
       setPendingIdeationAsset(prepared);
       setError(
         pastedFiles.length > 1
-          ? "需求提炼会话每次仅能绑定一份素材，已采用剪贴板中的第一份图片/视频。"
+          ? "Each ideation session can bind only one asset. The first image/video from the clipboard was used."
           : "",
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "素材处理失败。");
+      setError(err instanceof Error ? err.message : "Asset processing failed.");
     }
   }
 
@@ -530,7 +538,7 @@ export function App() {
       ...prev,
       {
         role: "assistant",
-        text: "已将需求提炼结果回填到主描述输入框。",
+        text: "Ideation result has been filled into the main prompt input.",
       },
     ]);
   }
@@ -553,7 +561,7 @@ export function App() {
       ...prev,
       {
         role: "assistant",
-        text: "已确认：下一条消息将按“新 Shader”处理，不继承当前 GLSL。需求提炼弹窗的记忆也已重置。",
+        text: "Confirmed: the next message will be treated as a \"New Shader\" request and will not inherit current GLSL. Ideation memory has also been reset.",
       },
     ]);
   }
@@ -564,7 +572,7 @@ export function App() {
 
   function buildUserChatSummary(content: string, imageCount: number): string {
     if (imageCount > 0) {
-      return `${content || "(仅参考图)"}\n[附带 ${imageCount} 张参考图]`;
+      return `${content || "(References only)"}\n[Attached ${imageCount} reference image(s)]`;
     }
     return content;
   }
@@ -693,7 +701,7 @@ export function App() {
             }));
           } catch (err) {
             failureCount += 1;
-            const errorMessage = err instanceof Error ? err.message : "生成失败";
+            const errorMessage = err instanceof Error ? err.message : "Generation failed";
             updateSlotAt(slotIndex, (current) => ({
               ...current,
               status: "error",
@@ -717,7 +725,7 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `并行生成完成：共 ${batchSize} 份，成功 ${successCount}，失败 ${failureCount}。`,
+          text: `Parallel generation complete: ${batchSize} total, ${successCount} succeeded, ${failureCount} failed.`,
         },
       ]);
       if (startedNewShader) {
@@ -725,7 +733,7 @@ export function App() {
           ...prev,
           {
             role: "assistant",
-            text: "本次生成未继承历史沟通和旧 GLSL，上下文已重置为新起点。",
+            text: "This generation did not inherit previous chat or old GLSL. Context was reset to a new starting point.",
           },
         ]);
       }
@@ -737,15 +745,15 @@ export function App() {
         setReferenceImages([]);
       }
       if (successCount === 0 && failureCount > 0) {
-        setError("本批次全部生成失败，请检查模型配置或稍后重试。");
+        setError("All generations in this batch failed. Please check model config or try again later.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "并行生成失败");
+      setError(err instanceof Error ? err.message : "Parallel generation failed");
       setChat((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: "并行生成失败：请检查 API Key 与网络后重试。",
+          text: "Parallel generation failed: please check API key and network, then retry.",
         },
       ]);
     } finally {
@@ -766,7 +774,7 @@ export function App() {
     event.preventDefault();
 
     if (referenceImages.length >= MAX_REFERENCE_IMAGES) {
-      setError(`最多只能附带 ${MAX_REFERENCE_IMAGES} 张参考图。`);
+      setError(`You can attach up to ${MAX_REFERENCE_IMAGES} reference images.`);
       return;
     }
 
@@ -778,10 +786,10 @@ export function App() {
       const preparedImages = await Promise.all(limitedFiles.map((file) => prepareReferenceImage(file)));
       setReferenceImages((prev) => [...prev, ...preparedImages]);
       if (pastedFiles.length > limitedFiles.length) {
-        setError(`最多只能附带 ${MAX_REFERENCE_IMAGES} 张参考图，其余图片已忽略。`);
+        setError(`You can attach up to ${MAX_REFERENCE_IMAGES} reference images. Extra images were ignored.`);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "图片处理失败");
+      setError(err instanceof Error ? err.message : "Image processing failed");
     }
   }
 
@@ -807,7 +815,7 @@ export function App() {
     }
     setShowRegenerateConfirm(false);
     const imageCount = lastGenerationRequest.referenceImages.length;
-    const summary = `${buildUserChatSummary(lastGenerationRequest.content, imageCount)}\n[重新生成]`;
+    const summary = `${buildUserChatSummary(lastGenerationRequest.content, imageCount)}\n[Regenerate]`;
     void submitGenerationBatch(lastGenerationRequest, summary, {
       parallelCountOverride: lastGenerationRequest.parallelCount,
     });
@@ -838,11 +846,11 @@ export function App() {
     const targetPrompt =
       lastGenerationRequest?.content.trim() || latestIdeationPrompt.trim() || input.trim();
     if (!targetPrompt) {
-      setError("缺少目标描述，无法执行一键优化。请先发送一次生成请求或先在需求提炼中确认提示词。");
+      setError("Missing target description. Cannot run One-Click Optimize. Send a generation request first or confirm a prompt in ideation.");
       return;
     }
     if (!previewRef.current) {
-      setError("预览器尚未就绪，无法截图。");
+      setError("Preview is not ready. Cannot capture screenshot.");
       return;
     }
 
@@ -862,8 +870,8 @@ export function App() {
       {
         role: "user",
         text: manualInstruction
-          ? `一键优化：编号 #${targetIndex + 1} 已附加你的修改意见，正在自动生成并执行优化（截图 t=2s + 素材评估）。`
-          : `一键优化：编号 #${targetIndex + 1} 未附加手动意见，正在由 Gemini 自动生成并执行优化（截图 t=2s + 素材评估）。`,
+          ? `One-Click Optimize: Slot #${targetIndex + 1} includes your manual instruction. Running optimize now (screenshot t=2s + asset evaluation).`
+          : `One-Click Optimize: Slot #${targetIndex + 1} has no manual instruction. Gemini is generating and applying optimization now (screenshot t=2s + asset evaluation).`,
       },
     ]);
 
@@ -894,11 +902,11 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${targetIndex + 1} 一键优化完成：Revision ${result.revision.id} (${result.revision.compileStatus})\nGemini评估：${suggestion.optimize.analysis}\nRequested: ${suggestion.optimize.model.requested}\nEffective: ${suggestion.optimize.model.effective}\nFallback: ${suggestion.optimize.model.fallbackUsed ? "yes" : "no"}\nLatency: ${suggestion.optimize.model.latencyMs} ms`,
+          text: `Slot #${targetIndex + 1} one-click optimize completed: Revision ${result.revision.id} (${result.revision.compileStatus})\nGemini Analysis: ${suggestion.optimize.analysis}\nRequested: ${suggestion.optimize.model.requested}\nEffective: ${suggestion.optimize.model.effective}\nFallback: ${suggestion.optimize.model.fallbackUsed ? "yes" : "no"}\nLatency: ${suggestion.optimize.model.latencyMs} ms`,
         },
       ]);
     } catch (err) {
-      const optimizeError = err instanceof Error ? err.message : "一键优化失败";
+      const optimizeError = err instanceof Error ? err.message : "One-click optimize failed";
       updateSlotAt(targetIndex, (slot) => ({
         ...slot,
         status: "error",
@@ -909,7 +917,7 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${targetIndex + 1} 一键优化失败，请检查 Gemini 链路和模型配置。`,
+          text: `Slot #${targetIndex + 1} one-click optimize failed. Please check Gemini pipeline and model config.`,
         },
       ]);
     } finally {
@@ -937,7 +945,7 @@ export function App() {
       ...prev,
       {
         role: "assistant",
-        text: `编号 #${selectedResultIndex + 1} 已回退到优化历史版本 ${nextCursor + 1}/${selectedSlot.optimizeHistory.length}。`,
+        text: `Slot #${selectedResultIndex + 1} reverted to optimize history version ${nextCursor + 1}/${selectedSlot.optimizeHistory.length}.`,
       },
     ]);
   }
@@ -952,7 +960,7 @@ export function App() {
       ...prev,
       {
         role: "assistant",
-        text: `编号 #${selectedResultIndex + 1} 已重做到优化历史版本 ${nextCursor + 1}/${selectedSlot.optimizeHistory.length}。`,
+        text: `Slot #${selectedResultIndex + 1} redone to optimize history version ${nextCursor + 1}/${selectedSlot.optimizeHistory.length}.`,
       },
     ]);
   }
@@ -973,7 +981,7 @@ export function App() {
       return;
     }
     if (!shaderCode.trim()) {
-      setError("当前 GLSL 为空，无法执行代码 debug。");
+      setError("Current GLSL is empty. Cannot run code debug.");
       return;
     }
 
@@ -1008,7 +1016,7 @@ export function App() {
       ...prev,
       {
         role: "user",
-        text: `代码 debug：修复当前编号 #${targetIndex + 1} 的 GLSL（Shadertoy 约定 + 预览可编译）`,
+        text: `Code debug: fix GLSL for current slot #${targetIndex + 1} (Shadertoy convention + preview-compilable).`,
       },
     ]);
 
@@ -1041,11 +1049,11 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${targetIndex + 1} 已完成代码 debug：Revision ${result.revision.id} (${result.revision.compileStatus})`,
+          text: `Slot #${targetIndex + 1} code debug completed: Revision ${result.revision.id} (${result.revision.compileStatus})`,
         },
       ]);
     } catch (err) {
-      const debugError = err instanceof Error ? err.message : "代码 debug 失败";
+      const debugError = err instanceof Error ? err.message : "Code debug failed";
       updateSlotAt(targetIndex, (slot) => ({
         ...slot,
         status: "error",
@@ -1056,7 +1064,7 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${targetIndex + 1} 代码 debug 失败，请检查模型和网络后重试。`,
+          text: `Slot #${targetIndex + 1} code debug failed. Please check model and network, then retry.`,
         },
       ]);
     } finally {
@@ -1077,7 +1085,7 @@ export function App() {
     if (fromInput.length > 0) {
       return fromInput;
     }
-    return "未提供原始提示词";
+    return "Original prompt unavailable";
   }
 
   async function handleFavoriteSlot(index: number) {
@@ -1089,7 +1097,7 @@ export function App() {
     }
     const slot = resultSlots[index];
     if (!slot || !slot.code.trim()) {
-      setError("当前结果没有可收藏的 GLSL 代码。");
+      setError("Current result has no GLSL code to favorite.");
       return;
     }
     if (favoriteBySlotKey[slot.slotKey]) {
@@ -1097,7 +1105,7 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${index + 1} 已收藏：${favoriteBySlotKey[slot.slotKey].name}`,
+          text: `Slot #${index + 1} already favorited: ${favoriteBySlotKey[slot.slotKey].name}`,
         },
       ]);
       return;
@@ -1134,11 +1142,11 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: `编号 #${index + 1} 已收藏为「${result.favorite.name}」。`,
+          text: `Slot #${index + 1} favorited as "${result.favorite.name}".`,
         },
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "收藏失败");
+      setError(err instanceof Error ? err.message : "Failed to favorite");
     } finally {
       setFavoriteLoadingBySlotKey((prev) => ({ ...prev, [slot.slotKey]: false }));
     }
@@ -1180,7 +1188,7 @@ export function App() {
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "导出失败");
+      setError(err instanceof Error ? err.message : "Export failed");
     }
   }
 
@@ -1189,20 +1197,29 @@ export function App() {
       <section className="panel left-panel">
         <div className="app-title-row">
           <h1>AI Shader Tool - M1</h1>
-          <button
-            type="button"
-            className="favorites-entry-button"
-            onClick={handleOpenFavoritesPage}
-          >
-            收藏页
-          </button>
+          <div className="app-title-actions">
+            <button
+              type="button"
+              className="favorites-entry-button"
+              onClick={handleOpenLogsPage}
+            >
+              Logs
+            </button>
+            <button
+              type="button"
+              className="favorites-entry-button"
+              onClick={handleOpenFavoritesPage}
+            >
+              Favorites
+            </button>
+          </div>
         </div>
 
         <div className="mode-title-row">
           <p className="mode-title">{SHADER_MODE_TITLE}</p>
         </div>
         <div className="model-active">
-          <div>当前模型：{DEFAULT_USER_MODEL}</div>
+          <div>Active Model: {DEFAULT_USER_MODEL}</div>
         </div>
         <div className="ideation-entry">
           <button
@@ -1210,9 +1227,9 @@ export function App() {
             onClick={handleOpenIdeationDialog}
             disabled={loading || !session}
           >
-            打开需求提炼 Chat
+            Open Ideation Chat
           </button>
-          <span>支持 1 张图片或 1 段视频，基于 Gemini 提炼 GLSL 提示词。</span>
+          <span>Supports 1 image or 1 video. Gemini will refine it into a GLSL prompt.</span>
         </div>
         <p className="mode-hint">{SHADER_MODE_HINT}</p>
 
@@ -1221,22 +1238,22 @@ export function App() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onPaste={handlePasteReferenceImages}
-              placeholder="描述你想要的 Shader（可直接粘贴 1-5 张参考图）。例如：流速慢一点，颜色偏红。"
+              placeholder="Describe the shader you want (you can paste 1-5 reference images). Example: slower flow, more red tone."
               rows={4}
               disabled={loading || !session}
             />
-            <div className="input-hint">支持 Ctrl/Cmd + V 粘贴参考图，最多 5 张。</div>
+            <div className="input-hint">Supports Ctrl/Cmd + V to paste reference images, up to 5.</div>
             {referenceImages.length > 0 ? (
               <div className="reference-images">
                 <div className="reference-images-header">
-                  已附带参考图 {referenceImages.length}/{MAX_REFERENCE_IMAGES}
+                  Attached references {referenceImages.length}/{MAX_REFERENCE_IMAGES}
                 </div>
                 <div className="reference-images-grid">
                   {referenceImages.map((image, index) => (
                     <div key={image.id} className="reference-image-card">
                       <img src={image.dataUrl} alt={`ref-${index + 1}`} />
                       {image.source === "ideation" ? (
-                        <div className="reference-image-source">提炼联动</div>
+                        <div className="reference-image-source">Linked from ideation</div>
                       ) : null}
                       <button
                         type="button"
@@ -1244,7 +1261,7 @@ export function App() {
                         onClick={() => handleRemoveReferenceImage(image.id)}
                         disabled={loading}
                       >
-                        移除
+                        Remove
                       </button>
                     </div>
                   ))}
@@ -1253,12 +1270,12 @@ export function App() {
             ) : null}
             {startNewShaderOnNextSend ? (
               <div className="armed-notice">
-                下一条发送将作为全新 Shader 生成，不继承当前 GLSL。
+                The next send will generate a brand-new shader and will not inherit current GLSL.
               </div>
             ) : null}
             <div className="parallel-control">
               <label htmlFor="parallel-count">
-                并行生成数量：<strong>{parallelCount}</strong>
+                Parallel Count: <strong>{parallelCount}</strong>
               </label>
               <input
                 id="parallel-count"
@@ -1273,13 +1290,13 @@ export function App() {
             </div>
             <div className="actions">
               <button type="submit" disabled={!canSend}>
-                {loading ? "生成中..." : "发送"}
+                {loading ? "Generating..." : "Send"}
               </button>
               <button type="button" onClick={handleRequestNewShader} disabled={loading || !session}>
-                新 Shader
+                New Shader
               </button>
               <button type="button" onClick={handleExport} disabled={!latestRevision}>
-                导出 .glsl
+                Export .glsl
               </button>
             </div>
           </form>
@@ -1288,13 +1305,13 @@ export function App() {
           <div className="revision-row">
             <div className="revision-meta">
               <span>
-                当前编号：{resultSlots.length > 0 ? `#${selectedResultIndex + 1} / ${resultSlots.length}` : "-"}
+                Current Slot: {resultSlots.length > 0 ? `#${selectedResultIndex + 1} / ${resultSlots.length}` : "-"}
               </span>
               <span>
-                槽位状态：{selectedSlot ? selectedSlot.status : "未生成"}
+                Slot Status: {selectedSlot ? selectedSlot.status : "Not generated"}
               </span>
               <span>
-                优化历史：{selectedSlot ? `${selectedSlot.optimizeCursor + 1}/${Math.max(1, selectedSlot.optimizeHistory.length)}` : "-"}
+                Optimize History: {selectedSlot ? `${selectedSlot.optimizeCursor + 1}/${Math.max(1, selectedSlot.optimizeHistory.length)}` : "-"}
               </span>
               {latestRevision ? (
                 <>
@@ -1315,7 +1332,7 @@ export function App() {
               onClick={handleRequestRegenerate}
               disabled={loading || !lastGenerationRequest}
             >
-              重新生成
+              Regenerate
             </button>
           </div>
         ) : null}
@@ -1333,7 +1350,7 @@ export function App() {
         <div className="chat-log">
           {chat.map((item, index) => (
             <div key={`${item.role}-${index}`} className={`chat-item ${item.role}`}>
-              <strong>{item.role === "user" ? "你" : "系统"}</strong>
+              <strong>{item.role === "user" ? "You" : "System"}</strong>
               <p>{item.text}</p>
             </div>
           ))}
@@ -1343,7 +1360,7 @@ export function App() {
       <section className="panel right-panel">
         <div className="preview-toolbar">
           <h2>
-            实时预览 <span className="preview-fixed-size">{DEFAULT_PREVIEW_WIDTH}x{DEFAULT_PREVIEW_HEIGHT}</span>
+            Live Preview <span className="preview-fixed-size">{DEFAULT_PREVIEW_WIDTH}x{DEFAULT_PREVIEW_HEIGHT}</span>
           </h2>
           <div className="result-tabs" role="tablist" aria-label="result-slots">
             {resultSlots.map((slot, index) => (
@@ -1376,7 +1393,7 @@ export function App() {
         />
         <div className="code-header">
           <div className="code-title-row">
-            <h2>GLSL 代码</h2>
+            <h2>GLSL Code</h2>
             <button
               type="button"
               className={[
@@ -1386,7 +1403,7 @@ export function App() {
               ]
                 .filter(Boolean)
                 .join(" ")}
-              title={selectedSlotFavorite ? `已收藏：${selectedSlotFavorite.name}` : "收藏当前编号"}
+              title={selectedSlotFavorite ? `Favorited: ${selectedSlotFavorite.name}` : "Favorite current slot"}
               aria-label="favorite-current-slot"
               onClick={() => handleFavoriteSlot(selectedResultIndex)}
               disabled={
@@ -1410,18 +1427,18 @@ export function App() {
               className="debug-button"
               onClick={handleUndoOptimizeVersion}
               disabled={loading || !canUndoOptimize}
-              title="回退当前编号的一键优化历史"
+              title="Undo one-click optimize history for current slot"
             >
-              回退
+              Undo
             </button>
             <button
               type="button"
               className="debug-button"
               onClick={handleRedoOptimizeVersion}
               disabled={loading || !canRedoOptimize}
-              title="重做当前编号的一键优化历史"
+              title="Redo one-click optimize history for current slot"
             >
-              重做
+              Redo
             </button>
             <button
               type="button"
@@ -1429,7 +1446,7 @@ export function App() {
               onClick={handleDebugCode}
               disabled={loading || !session || !shaderCode.trim()}
             >
-              代码debug
+              Code Debug
             </button>
             <button
               type="button"
@@ -1437,7 +1454,7 @@ export function App() {
               onClick={handleRequestOptimize}
               disabled={loading || !session || !selectedSlot || !shaderCode.trim()}
             >
-              一键优化
+              One-Click Optimize
             </button>
           </div>
         </div>
@@ -1445,20 +1462,20 @@ export function App() {
           className="code-editor"
           value={shaderCode}
           onChange={(event) => handleCodeEditorChange(event.target.value)}
-          placeholder="等待生成 shader..."
+          placeholder="Waiting for shader generation..."
           spellCheck={false}
         />
         {hasLocalCodeEdits ? (
-          <div className="editor-notice">本地 GLSL 已修改，下一次发送会带上当前代码。</div>
+          <div className="editor-notice">Local GLSL has been edited. The next send will include current code.</div>
         ) : null}
       </section>
       {ideationDialogOpen ? (
         <div className="dialog-backdrop">
           <div className="dialog-panel ideation-dialog">
             <div className="ideation-header">
-              <h3>需求提炼 Chat（Gemini）</h3>
+              <h3>Ideation Chat (Gemini)</h3>
               <button type="button" onClick={handleCloseIdeationDialog}>
-                关闭
+                Close
               </button>
             </div>
             <div className="ideation-asset-row">
@@ -1469,32 +1486,32 @@ export function App() {
                   onChange={handlePickIdeationAsset}
                   disabled={ideationLoading || ideationAssetLocked}
                 />
-                上传图片/视频
+                Upload Image/Video
               </label>
               {pendingIdeationAsset ? (
                 <div className="ideation-asset-pill">
-                  待上传：{pendingIdeationAsset.fileName} ({pendingIdeationAsset.kind},{" "}
+                  Pending: {pendingIdeationAsset.fileName} ({pendingIdeationAsset.kind},{" "}
                   {(pendingIdeationAsset.bytes / 1024 / 1024).toFixed(2)}MB)
                   <button type="button" onClick={handleClearPendingIdeationAsset} disabled={ideationLoading}>
-                    移除
+                    Remove
                   </button>
                 </div>
               ) : null}
               {ideationAsset ? (
                 <div className="ideation-asset-pill">
-                  已绑定素材：{ideationAsset.fileName} ({ideationAsset.kind},{" "}
+                  Bound Asset: {ideationAsset.fileName} ({ideationAsset.kind},{" "}
                   {(ideationAsset.bytes / 1024 / 1024).toFixed(2)}MB)
                 </div>
               ) : null}
             </div>
-            <div className="ideation-note">当前会话仅允许绑定一份素材；后续每轮会自动附带。需替换时点击“新 Shader”。</div>
+            <div className="ideation-note">Only one asset can be bound in this session. It will be auto-attached in later rounds. Click "New Shader" to replace it.</div>
             <div className="ideation-log">
               {ideationMessages.length === 0 ? (
-                <div className="ideation-empty">在这里先沟通目标效果，Gemini 会提炼成可用于 GLSL 生成的提示词。</div>
+                <div className="ideation-empty">Discuss your target effect here first. Gemini will refine it into a prompt for GLSL generation.</div>
               ) : null}
               {ideationMessages.map((message) => (
                 <div key={message.id} className={`ideation-item ${message.role}`}>
-                  <strong>{message.role === "user" ? "你" : "Gemini"}</strong>
+                  <strong>{message.role === "user" ? "You" : "Gemini"}</strong>
                   <p>{message.text}</p>
                   {message.role === "assistant" && message.extractedPrompt ? (
                     <pre className="ideation-prompt">{message.extractedPrompt}</pre>
@@ -1515,21 +1532,21 @@ export function App() {
                 value={ideationInput}
                 onChange={(event) => setIdeationInput(event.target.value)}
                 onPaste={handlePasteIdeationAsset}
-                placeholder="描述目标效果，或只上传素材后直接发送让 Gemini 先分析。"
+                placeholder="Describe the target effect, or upload an asset and send directly for Gemini to analyze first."
                 rows={4}
                 disabled={ideationLoading}
               />
-              <div className="input-hint">支持 Ctrl/Cmd + V 粘贴图片或视频（最多绑定 1 份素材）。</div>
+              <div className="input-hint">Supports Ctrl/Cmd + V to paste image/video (up to 1 bound asset).</div>
               <div className="actions">
                 <button type="submit" disabled={ideationLoading || (!ideationInput.trim() && !pendingIdeationAsset)}>
-                  {ideationLoading ? "提炼中..." : "发送"}
+                  {ideationLoading ? "Refining..." : "Send"}
                 </button>
                 <button
                   type="button"
                   onClick={handleConfirmIdeationPrompt}
                   disabled={!latestIdeationPrompt.trim()}
                 >
-                  确认并填入主描述
+                  Confirm & Fill Main Prompt
                 </button>
               </div>
             </form>
@@ -1539,16 +1556,16 @@ export function App() {
       {showNewShaderConfirm ? (
         <div className="dialog-backdrop">
           <div className="dialog-panel">
-            <h3>确认创建新 Shader</h3>
+            <h3>Confirm New Shader</h3>
             <p>
-              确认后，下一条消息会被当作全新 Shader 需求，不继承当前 GLSL 和之前的修改链。
+              After confirmation, the next message will be treated as a brand-new shader request and will not inherit current GLSL or previous edit history.
             </p>
             <div className="actions">
               <button type="button" onClick={handleCancelNewShader}>
-                取消
+                Cancel
               </button>
               <button type="button" onClick={handleConfirmNewShader}>
-                确认
+                Confirm
               </button>
             </div>
           </div>
@@ -1557,14 +1574,14 @@ export function App() {
       {showRegenerateConfirm ? (
         <div className="dialog-backdrop">
           <div className="dialog-panel">
-            <h3>确认重新生成</h3>
-            <p>确认后将按上一条生成指令重新请求一次，用于快速抽卡。</p>
+            <h3>Confirm Regenerate</h3>
+            <p>After confirmation, the previous generation instruction will be sent again for a quick reroll.</p>
             <div className="actions">
               <button type="button" onClick={handleCancelRegenerate}>
-                取消
+                Cancel
               </button>
               <button type="button" onClick={handleConfirmRegenerate}>
-                确认
+                Confirm
               </button>
             </div>
           </div>
@@ -1574,34 +1591,36 @@ export function App() {
         <div className="dialog-backdrop">
           <div className="dialog-panel optimize-edit-dialog">
             <div className="optimize-edit-header">
-              <h3>一键优化补充意见（可选）</h3>
+              <h3>Additional One-Click Optimize Instruction (Optional)</h3>
               <button type="button" onClick={handleCancelOptimizeInput} aria-label="close-optimize-dialog">
                 ×
               </button>
             </div>
             <div className="optimize-edit-meta">
               <div>
-                这里填写你对当前结果的人工干预意见。提交后会和目标描述、预览截图、绑定素材一起交给
-                Gemini 评估并直接执行优化。
+                Enter your manual adjustment notes for the current result here. After submitting, they will be
+                sent together with target description, preview screenshot, and bound asset to Gemini for
+                evaluation and direct optimization.
               </div>
               <div>
-                若你的意见与参考图/视频冲突，系统会以你的文字意见为主；留空则完全由 Gemini 自主决策。
+                If your instruction conflicts with reference image/video, your text instruction takes priority.
+                Leave it empty for fully automatic Gemini decisions.
               </div>
             </div>
             <textarea
               className="optimize-edit-textarea"
               value={optimizeUserInstructionInput}
               onChange={(event) => setOptimizeUserInstructionInput(event.target.value)}
-              placeholder="例如：保留现在的构图，但把波动频率减半，并强化左侧拖影层次。"
+              placeholder="Example: Keep the current composition, halve the wave frequency, and strengthen the left trailing layers."
               rows={8}
               disabled={loading}
             />
             <div className="actions">
               <button type="button" onClick={handleCancelOptimizeInput} disabled={loading}>
-                取消
+                Cancel
               </button>
               <button type="button" onClick={handleSubmitOptimizeInput} disabled={loading}>
-                直接开始优化
+                Start Optimize Now
               </button>
             </div>
           </div>

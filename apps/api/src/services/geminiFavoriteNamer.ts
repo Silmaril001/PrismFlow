@@ -145,13 +145,13 @@ function parseResult(rawText: string): { name: string; promptPreview: string } {
     const promptPreview =
       typeof parsed.prompt_preview === "string" ? parsed.prompt_preview.trim() : "";
     return {
-      name: name || "未命名Shader",
-      promptPreview: promptPreview || "无摘要",
+      name: name || "Untitled Shader",
+      promptPreview: promptPreview || "No summary",
     };
   } catch {
     return {
-      name: "未命名Shader",
-      promptPreview: trimmed || "无摘要",
+      name: "Untitled Shader",
+      promptPreview: trimmed || "No summary",
     };
   }
 }
@@ -165,8 +165,8 @@ export async function nameFavoriteFromGemini(input: {
 }> {
   if (!config.favoriteNamerApiKey) {
     return {
-      name: "未命名Shader",
-      promptPreview: input.sourcePrompt.trim() || "无摘要",
+      name: "Untitled Shader",
+      promptPreview: input.sourcePrompt.trim() || "No summary",
     };
   }
 
@@ -192,8 +192,8 @@ export async function nameFavoriteFromGemini(input: {
         {
           role: "user",
           content: [
-            "请为这个收藏结果生成名字和提示词摘要。",
-            `Source Prompt:\n${input.sourcePrompt.trim() || "（空）"}`,
+            "Please generate a name and prompt summary for this favorite result.",
+            `Source Prompt:\n${input.sourcePrompt.trim() || "(empty)"}`,
             `GLSL Code:\n${input.code.trim().slice(0, 24000)}`,
           ].join("\n\n"),
         },
