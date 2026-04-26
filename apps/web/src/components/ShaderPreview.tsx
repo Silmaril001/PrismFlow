@@ -26,6 +26,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 }
 `;
 
+// Use one oversized fullscreen triangle to avoid the diagonal seam that can
+// appear with two-triangle strips in some shaders/GPUs.
+const FULLSCREEN_TRIANGLE_VERTICES = new Float32Array([
+  -1, -1,
+  3, -1,
+  -1, 3,
+]);
+
 interface ShaderPreviewProps {
   fragmentShader: string;
   viewportWidth: number;
@@ -43,8 +51,33 @@ type PreviewTarget = "webgl1" | "webgl2";
 
 type GLContext = WebGLRenderingContext | WebGL2RenderingContext;
 
+const WEBGL_CONTEXT_ATTRIBUTES: WebGLContextAttributes = {
+  antialias: false,
+  alpha: false,
+  depth: false,
+  stencil: false,
+  premultipliedAlpha: false,
+  preserveDrawingBuffer: false,
+  desynchronized: true,
+  powerPreference: "high-performance",
+};
+
 function isWebGL2Context(gl: GLContext): gl is WebGL2RenderingContext {
   return typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+}
+
+function createGLContext(canvas: HTMLCanvasElement): GLContext | null {
+  return (
+    (canvas.getContext("webgl2", WEBGL_CONTEXT_ATTRIBUTES) as GLContext | null) ??
+    canvas.getContext("webgl", WEBGL_CONTEXT_ATTRIBUTES)
+  );
+}
+
+function prepareGLState(gl: GLContext): void {
+  gl.disable(gl.DITHER);
+  gl.disable(gl.BLEND);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
 }
 
 export function normalizeShaderForPreview(raw: string, target: PreviewTarget): string {
@@ -148,10 +181,11 @@ function renderStillFrameDataUrl(params: {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const gl = (canvas.getContext("webgl2") as GLContext | null) ?? canvas.getContext("webgl");
+  const gl = createGLContext(canvas);
   if (!gl) {
     throw new Error("Browser does not support WebGL.");
   }
+  prepareGLState(gl);
 
   const target: PreviewTarget = isWebGL2Context(gl) ? "webgl2" : "webgl1";
   const vertexSource = target === "webgl2" ? VERTEX_SHADER_WEBGL2 : VERTEX_SHADER_WEBGL1;
@@ -183,11 +217,7 @@ function renderStillFrameDataUrl(params: {
 
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-  gl.bufferData(
-    gl.ARRAY_BUFFER,
-    new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
-    gl.STATIC_DRAW,
-  );
+  gl.bufferData(gl.ARRAY_BUFFER, FULLSCREEN_TRIANGLE_VERTICES, gl.STATIC_DRAW);
 
   const positionLoc = gl.getAttribLocation(program, "a_position");
   gl.enableVertexAttribArray(positionLoc);
@@ -210,7 +240,7 @@ function renderStillFrameDataUrl(params: {
   if (iResolutionLoc) {
     gl.uniform3f(iResolutionLoc, width, height, 1.0);
   }
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   const dataUrl = canvas.toDataURL("image/png");
   if (positionBuffer) {
@@ -267,14 +297,15 @@ export const ShaderPreview = forwardRef<ShaderPreviewHandle, ShaderPreviewProps>
       return;
     }
 
-    const gl = (canvas.getContext("webgl2") as GLContext | null) ?? canvas.getContext("webgl");
-    if (!gl) {
-      setCompileError("Browser does not support WebGL.");
-      setRendererTag("NO GL");
-      return;
-    }
-    const target: PreviewTarget = isWebGL2Context(gl) ? "webgl2" : "webgl1";
-    setRendererTag(target === "webgl2" ? "GL2" : "GL1");
+  const gl = createGLContext(canvas);
+  if (!gl) {
+    setCompileError("Browser does not support WebGL.");
+    setRendererTag("NO GL");
+    return;
+  }
+  prepareGLState(gl);
+  const target: PreviewTarget = isWebGL2Context(gl) ? "webgl2" : "webgl1";
+  setRendererTag(target === "webgl2" ? "GL2" : "GL1");
 
     let animationFrame = 0;
     const start = performance.now();
@@ -309,11 +340,7 @@ export const ShaderPreview = forwardRef<ShaderPreviewHandle, ShaderPreviewProps>
 
       const positionBuffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
-        gl.STATIC_DRAW,
-      );
+      gl.bufferData(gl.ARRAY_BUFFER, FULLSCREEN_TRIANGLE_VERTICES, gl.STATIC_DRAW);
 
       const positionLoc = gl.getAttribLocation(program, "a_position");
       gl.enableVertexAttribArray(positionLoc);
@@ -323,8 +350,12 @@ export const ShaderPreview = forwardRef<ShaderPreviewHandle, ShaderPreviewProps>
       const resolutionLoc = gl.getUniformLocation(program, "u_resolution");
       const iTimeLoc = gl.getUniformLocation(program, "iTime");
       const iResolutionLoc = gl.getUniformLocation(program, "iResolution");
-      const width = Math.max(64, Math.floor(viewportWidth));
-      const height = Math.max(64, Math.floor(viewportHeight));
+      const dpr =
+        typeof window !== "undefined" ? Math.min(2, window.devicePixelRatio || 1) : 1;
+      const cssWidth = Math.max(64, Math.floor(canvas.clientWidth || viewportWidth));
+      const cssHeight = Math.max(64, Math.floor(canvas.clientHeight || viewportHeight));
+      const width = Math.max(64, Math.floor(cssWidth * dpr));
+      const height = Math.max(64, Math.floor(cssHeight * dpr));
       canvas.width = width;
       canvas.height = height;
 
@@ -342,7 +373,7 @@ export const ShaderPreview = forwardRef<ShaderPreviewHandle, ShaderPreviewProps>
         if (iResolutionLoc) {
           gl.uniform3f(iResolutionLoc, width, height, 1.0);
         }
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
       };
 
       const cleanup = () => {
