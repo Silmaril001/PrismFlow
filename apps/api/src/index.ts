@@ -1202,11 +1202,21 @@ app.post("/v1/favorites", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
 
-  const hasSessionLink = Boolean(
-    (parsed.data.sessionId && parsed.data.sessionId.trim().length > 0) ||
-      (parsed.data.revisionId && parsed.data.revisionId.trim().length > 0),
-  );
-  const isManualFavoritePublish = !hasSessionLink;
+  const requestedSessionId = parsed.data.sessionId?.trim();
+  const requestedRevisionId = parsed.data.revisionId?.trim();
+  let validatedSessionId: string | undefined;
+  let validatedRevisionId: string | undefined;
+  if (requestedSessionId && requestedRevisionId) {
+    const [session, revision] = await Promise.all([
+      appStore.getSession(requestedSessionId),
+      appStore.getRevision(requestedRevisionId),
+    ]);
+    if (session && revision && revision.sessionId === session.id) {
+      validatedSessionId = session.id;
+      validatedRevisionId = revision.id;
+    }
+  }
+  const isManualFavoritePublish = !(validatedSessionId && validatedRevisionId);
   if (!enforceFavoriteDuplicateGuard(request, reply, parsed.data.code)) {
     return;
   }
@@ -1240,8 +1250,8 @@ app.post("/v1/favorites", async (request, reply) => {
       promptPreview: manualPromptPreview || naming.promptPreview,
       code: parsed.data.code,
       coverImageDataUrl: parsed.data.coverImageDataUrl,
-      revisionId: parsed.data.revisionId,
-      sessionId: parsed.data.sessionId,
+      revisionId: validatedRevisionId,
+      sessionId: validatedSessionId,
     });
 
     return reply.send({
