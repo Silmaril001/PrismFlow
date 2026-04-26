@@ -5,6 +5,9 @@
 PrismFlow 是一个在线 Shader 生成与迭代工具。  
 你只需要输入一句话描述想要的视觉效果，它就会生成可实时预览的 GLSL 动效代码。
 
+## 使用链接：
+https://prismflow.duckdns.org/
+
 适合人群：
 
 - 设计师
