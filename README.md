@@ -29,7 +29,7 @@ npm run start:oneclick
 Right Codes 渠道建议配置：
 
 - `OPENAI_BASE_URL=https://www.right.codes/codex/v1`
-- `OPENAI_MODEL=gpt-5.4-medium`
+- `OPENAI_MODEL=gpt-5.5`
 - `OPENAI_TIMEOUT_MS=90000`
 - `OPENAI_MAX_TOKENS=900`（限制单次生成长度，降低延迟抖动）
 - `OPENAI_DEBUG_MODEL=gpt-5.4-mini`（代码debug专用）
@@ -132,7 +132,7 @@ M1 前端直连线上 API（当前 DO 测试环境）：
 
 ## 当前能力
 
-- 模式切换：`shader_glsl` / `pbr_texture`
+- UI 固定为 Shader（GLSL）模式，`PBR` 入口已从前端下沉
 - Shader 会话创建
 - 文本驱动 GLSL 生成与迭代
 - Chat 输入框支持剪贴板粘贴参考图（最多 5 张），可与文本一起作为多模态输入
@@ -143,12 +143,8 @@ M1 前端直连线上 API（当前 DO 测试环境）：
 - 需求提炼弹窗支持“确认并填入主描述”，可回填 GLSL 生成提示词到主输入框
 - 需求提炼弹窗关闭后状态保留；点击“新 Shader”会同步重置弹窗聊天和已上传素材
 - Revision 信息区支持“重新生成”二次确认（复用上一条生成指令快速抽卡）
-- Shader 模式支持渠道切换：`rightcode` / `openrouter`
-- Shader 模式支持手动输入模型名并点击“应用”（下一次发送/重新生成生效）
-- Shader 模式支持手动输入 Base URL 并与模型一起点击“应用”（下一次发送/重新生成生效）
-- 切到 `openrouter` 后，右侧“模型名”可继续手动应用并生效（默认 `claude-opus-4.6`）
-- 切到 `openrouter` 后，UI 的 Base URL 输入不生效，仍固定走服务端 `OPENROUTER_BASE_URL`
-- 修改模式会把当前 GLSL 连同你的修改要求一起提交给模型
+- 前端不再暴露渠道 / 模型 / Base URL 切换，默认走 rightcode；当前模型默认 `gpt-5.5`（可在 API `.env` 改 `OPENAI_MODEL`）
+- 发送时会把当前 GLSL 连同你的修改要求一起提交给模型
 - UI 可查看模型调用信息：请求模型、实际模型、是否回退、LLM 延迟
 - GLSL 区域可直接编辑，修改后与预览实时联动
 - GLSL 标题右侧支持“代码debug”按钮（模型和 Base URL 由 API 的 `.env` 指定，不受 UI 设置影响）

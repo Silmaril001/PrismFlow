@@ -19,9 +19,7 @@ import {
   sendMessage,
   type IdeationAssetMeta,
   type IdeationMessage,
-  type LlmChannel,
   type ReferenceImageInput,
-  type Mode,
   type Revision,
   type Session,
 } from "./api";
@@ -95,27 +93,15 @@ interface SlotFavoriteMeta {
   name: string;
 }
 
-const MODE_COPY: Record<Mode, { title: string; hint: string }> = {
-  shader_glsl: {
-    title: "程序化 Shader 模式 (GLSL)",
-    hint: "适用于发光动效、消融、流体规律、全息扫描等数学驱动视觉。",
-  },
-  pbr_texture: {
-    title: "PBR 材质生成模式 (纹理组)",
-    hint: "适用于写实地砖、金属锈迹、木纹、布料、浮雕等物理表面特征。",
-  },
-};
-
 const INITIAL_PROMPT = "做一个蓝色能量流动的全屏 Shader，节奏平稳。";
 const DEFAULT_PREVIEW_WIDTH = 960;
 const DEFAULT_PREVIEW_HEIGHT = 540;
 const MIN_PARALLEL_COUNT = 1;
 const MAX_PARALLEL_COUNT = 10;
 const DEFAULT_PARALLEL_COUNT = 5;
-const DEFAULT_CHANNEL: LlmChannel = "rightcode";
-const DEFAULT_USER_MODEL = "gpt-5.4-medium";
-const DEFAULT_USER_BASE_URL = "https://www.right.codes/codex/v1";
-const DEFAULT_OPENROUTER_MODEL = "claude-opus-4.6";
+const DEFAULT_USER_MODEL = "gpt-5.5";
+const SHADER_MODE_TITLE = "程序化 Shader 模式 (GLSL)";
+const SHADER_MODE_HINT = "适用于发光动效、消融、流体规律、全息扫描等数学驱动视觉。";
 const MAX_REFERENCE_IMAGES = 5;
 const MAX_REFERENCE_IMAGE_BYTES = 1_500_000;
 const MAX_REFERENCE_IMAGE_DIMENSION = 1536;
@@ -250,7 +236,6 @@ async function prepareIdeationAsset(file: File): Promise<PendingIdeationAsset> {
 
 export function App() {
   const previewRef = useRef<ShaderPreviewHandle | null>(null);
-  const [mode, setMode] = useState<Mode>("shader_glsl");
   const [session, setSession] = useState<Session | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [input, setInput] = useState(INITIAL_PROMPT);
@@ -269,12 +254,6 @@ export function App() {
   const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false);
   const [showOptimizeInputDialog, setShowOptimizeInputDialog] = useState(false);
   const [optimizeUserInstructionInput, setOptimizeUserInstructionInput] = useState("");
-  const [appliedChannel, setAppliedChannel] = useState<LlmChannel>(DEFAULT_CHANNEL);
-  const [modelInput, setModelInput] = useState(DEFAULT_USER_MODEL);
-  const [appliedRightcodeModel, setAppliedRightcodeModel] = useState(DEFAULT_USER_MODEL);
-  const [appliedOpenrouterModel, setAppliedOpenrouterModel] = useState(DEFAULT_OPENROUTER_MODEL);
-  const [baseUrlInput, setBaseUrlInput] = useState(DEFAULT_USER_BASE_URL);
-  const [appliedRightcodeBaseUrl, setAppliedRightcodeBaseUrl] = useState(DEFAULT_USER_BASE_URL);
   const [ideationDialogOpen, setIdeationDialogOpen] = useState(false);
   const [ideationInput, setIdeationInput] = useState("");
   const [ideationMessages, setIdeationMessages] = useState<IdeationMessage[]>([]);
@@ -315,7 +294,7 @@ export function App() {
       setFavoriteLoadingBySlotKey({});
 
       try {
-        const created = await createSession(mode);
+        const created = await createSession("shader_glsl");
         if (!cancelled) {
           setSession(created);
           try {
@@ -351,9 +330,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [mode]);
-
-  const modeHint = useMemo(() => MODE_COPY[mode], [mode]);
+  }, []);
   const selectedSlot = resultSlots[selectedResultIndex] ?? null;
   const shaderCode = selectedSlot ? selectedSlot.code : draftShaderCode;
   const latestRevision = selectedSlot?.revision ?? null;
@@ -585,72 +562,6 @@ export function App() {
     setShowNewShaderConfirm(false);
   }
 
-  function handleApplyModel() {
-    const nextModel = modelInput.trim();
-    if (!nextModel) {
-      setError("模型名不能为空。");
-      return;
-    }
-    if (appliedChannel === "rightcode") {
-      const nextBaseUrl = baseUrlInput.trim();
-      if (!nextBaseUrl) {
-        setError("Base URL 不能为空。");
-        return;
-      }
-      try {
-        new URL(nextBaseUrl);
-      } catch {
-        setError("Base URL 格式不正确，请输入完整 URL（例如 https://www.right.codes/codex/v1）。");
-        return;
-      }
-      setAppliedRightcodeModel(nextModel);
-      setAppliedRightcodeBaseUrl(nextBaseUrl);
-      setError("");
-      setChat((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: `已应用 rightcode 模型：${nextModel}\n已应用 Base URL：${nextBaseUrl}\n下一次发送和重新生成将使用这组配置。`,
-        },
-      ]);
-      return;
-    }
-
-    setAppliedOpenrouterModel(nextModel);
-    setError("");
-    setChat((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        text: `已应用 openrouter 模型：${nextModel}\nopenrouter 渠道仍固定走服务端 OPENROUTER_BASE_URL，UI 的 Base URL 输入不会生效。`,
-      },
-    ]);
-  }
-
-  function handleSwitchChannel(channel: LlmChannel) {
-    if (loading || !session || appliedChannel === channel) {
-      return;
-    }
-    setAppliedChannel(channel);
-    if (channel === "rightcode") {
-      setModelInput(appliedRightcodeModel);
-      setBaseUrlInput(appliedRightcodeBaseUrl);
-    } else {
-      setModelInput(appliedOpenrouterModel);
-    }
-    setError("");
-    setChat((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        text:
-          channel === "openrouter"
-            ? `已切换渠道到 openrouter。后续发送和重新生成将使用当前 openrouter 模型（当前：${appliedOpenrouterModel || DEFAULT_OPENROUTER_MODEL}）；UI 的 Base URL 输入不会生效。`
-            : "已切换渠道到 rightcode。后续发送和重新生成将使用你当前应用的模型和 Base URL。",
-      },
-    ]);
-  }
-
   function buildUserChatSummary(content: string, imageCount: number): string {
     if (imageCount > 0) {
       return `${content || "(仅参考图)"}\n[附带 ${imageCount} 张参考图]`;
@@ -726,41 +637,12 @@ export function App() {
     );
   }
 
-  function resolveRequestTransport(options?: {
-    channelOverride?: LlmChannel;
-    modelOverride?: string;
-    baseUrlOverride?: string;
-    debugMode?: boolean;
-  }): {
-    channelForRequest: LlmChannel;
-    modelForRequest: string;
-    baseUrlForRequest?: string;
-  } {
-    const debugMode = options?.debugMode ?? false;
-    const channelForRequest = options?.channelOverride ?? appliedChannel;
-    const useRightcodeOverrides = channelForRequest === "rightcode" || debugMode;
-    const modelForRequest = useRightcodeOverrides
-      ? options?.modelOverride?.trim() || appliedRightcodeModel.trim() || DEFAULT_USER_MODEL
-      : options?.modelOverride?.trim() || appliedOpenrouterModel.trim() || DEFAULT_OPENROUTER_MODEL;
-    const baseUrlForRequest = useRightcodeOverrides
-      ? options?.baseUrlOverride?.trim() || appliedRightcodeBaseUrl.trim() || DEFAULT_USER_BASE_URL
-      : undefined;
-    return {
-      channelForRequest,
-      modelForRequest,
-      baseUrlForRequest,
-    };
-  }
-
   async function submitGenerationBatch(
     request: GenerationRequestSnapshot,
     userChatSummary: string,
     options?: {
       clearInput?: boolean;
       clearReferenceImages?: boolean;
-      channelOverride?: LlmChannel;
-      modelOverride?: string;
-      baseUrlOverride?: string;
       updateRegenerateSnapshot?: boolean;
       parallelCountOverride?: number;
     },
@@ -770,12 +652,6 @@ export function App() {
     }
 
     const batchSize = clampParallelCount(options?.parallelCountOverride ?? parallelCount);
-    const { channelForRequest, modelForRequest, baseUrlForRequest } = resolveRequestTransport({
-      channelOverride: options?.channelOverride,
-      modelOverride: options?.modelOverride,
-      baseUrlOverride: options?.baseUrlOverride,
-      debugMode: false,
-    });
     const pendingSlots = buildPendingSlots(batchSize);
 
     setResultSlots(pendingSlots);
@@ -799,9 +675,6 @@ export function App() {
               startNewShader: request.startNewShader,
               currentCode: request.currentCode,
               referenceImages: request.referenceImages,
-              channel: channelForRequest,
-              model: modelForRequest,
-              baseUrl: baseUrlForRequest,
               debugMode: false,
             });
             successCount += 1;
@@ -872,7 +745,7 @@ export function App() {
         ...prev,
         {
           role: "assistant",
-          text: "并行生成失败：请检查 API Key、模型名和 Base URL 配置。",
+          text: "并行生成失败：请检查 API Key 与网络后重试。",
         },
       ]);
     } finally {
@@ -1003,15 +876,9 @@ export function App() {
         userInstruction: manualInstruction || undefined,
       });
 
-      const { channelForRequest, modelForRequest, baseUrlForRequest } = resolveRequestTransport({
-        debugMode: false,
-      });
       const result = await applyOptimizePrompt(session.id, {
         optimizePrompt: suggestion.optimize.prompt,
         currentCode,
-        channel: channelForRequest,
-        model: modelForRequest,
-        baseUrl: baseUrlForRequest,
         parentRevisionId,
       });
       updateSlotAt(targetIndex, (slot) => ({
@@ -1135,10 +1002,6 @@ export function App() {
       }));
     }
 
-    const { channelForRequest, modelForRequest, baseUrlForRequest } = resolveRequestTransport({
-      debugMode: true,
-    });
-
     setLoading(true);
     setError("");
     setChat((prev) => [
@@ -1162,9 +1025,6 @@ export function App() {
         startNewShader: false,
         currentCode: shaderCode,
         referenceImages: [],
-        channel: channelForRequest,
-        model: modelForRequest,
-        baseUrl: baseUrlForRequest,
         debugMode: true,
         previewCompileErrors: debugCompileErrors,
       });
@@ -1337,107 +1197,26 @@ export function App() {
             收藏页
           </button>
         </div>
-        <div className="mode-switch">
-          <button
-            className={mode === "shader_glsl" ? "active" : ""}
-            onClick={() => setMode("shader_glsl")}
-          >
-            Shader
-          </button>
-          <button
-            className={mode === "pbr_texture" ? "active" : ""}
-            onClick={() => setMode("pbr_texture")}
-          >
-            PBR
-          </button>
-        </div>
 
         <div className="mode-title-row">
-          <p className="mode-title">{modeHint.title}</p>
-          {mode === "shader_glsl" ? (
-            <div className="model-controls">
-              <div className="channel-switch">
-                <button
-                  type="button"
-                  className={appliedChannel === "rightcode" ? "active" : ""}
-                  onClick={() => handleSwitchChannel("rightcode")}
-                  disabled={loading || !session}
-                >
-                  rightcode
-                </button>
-                <button
-                  type="button"
-                  className={appliedChannel === "openrouter" ? "active" : ""}
-                  onClick={() => handleSwitchChannel("openrouter")}
-                  disabled={loading || !session}
-                >
-                  openrouter
-                </button>
-              </div>
-              <input
-                type="text"
-                value={modelInput}
-                onChange={(event) => setModelInput(event.target.value)}
-                aria-label="model-name"
-                title="模型名称"
-                placeholder={appliedChannel === "rightcode" ? DEFAULT_USER_MODEL : DEFAULT_OPENROUTER_MODEL}
-                disabled={loading || !session}
-              />
-              <input
-                type="text"
-                value={baseUrlInput}
-                onChange={(event) => setBaseUrlInput(event.target.value)}
-                aria-label="base-url"
-                title="Base URL"
-                placeholder={DEFAULT_USER_BASE_URL}
-                disabled={loading || !session || appliedChannel !== "rightcode"}
-              />
-              <button
-                type="button"
-                onClick={handleApplyModel}
-                disabled={loading || !session}
-              >
-                应用
-              </button>
-            </div>
-          ) : null}
+          <p className="mode-title">{SHADER_MODE_TITLE}</p>
         </div>
-        {mode === "shader_glsl" ? (
-          <div className="model-active">
-            <div>当前渠道：{appliedChannel}</div>
-            {appliedChannel === "rightcode" ? (
-              <>
-                <div>当前模型：{appliedRightcodeModel}</div>
-                <div>当前 Base URL：{appliedRightcodeBaseUrl}</div>
-              </>
-            ) : (
-              <>
-                <div>当前模型：{appliedOpenrouterModel || DEFAULT_OPENROUTER_MODEL}</div>
-                <div>openrouter 固定使用服务端 OPENROUTER_BASE_URL（UI Base URL 不生效）。</div>
-              </>
-            )}
-          </div>
-        ) : null}
-        {mode === "shader_glsl" ? (
-          <div className="ideation-entry">
-            <button
-              type="button"
-              onClick={handleOpenIdeationDialog}
-              disabled={loading || !session}
-            >
-              打开需求提炼 Chat
-            </button>
-            <span>支持 1 张图片或 1 段视频，基于 Gemini 提炼 GLSL 提示词。</span>
-          </div>
-        ) : null}
-        <p className="mode-hint">{modeHint.hint}</p>
+        <div className="model-active">
+          <div>当前模型：{DEFAULT_USER_MODEL}</div>
+        </div>
+        <div className="ideation-entry">
+          <button
+            type="button"
+            onClick={handleOpenIdeationDialog}
+            disabled={loading || !session}
+          >
+            打开需求提炼 Chat
+          </button>
+          <span>支持 1 张图片或 1 段视频，基于 Gemini 提炼 GLSL 提示词。</span>
+        </div>
+        <p className="mode-hint">{SHADER_MODE_HINT}</p>
 
-        {mode === "pbr_texture" ? (
-          <div className="notice-box">
-            PBR 管线已预留接口，但 M1 未启用。请切回 Shader 模式继续。
-          </div>
-        ) : (
-          <form onSubmit={handleSend} className="chat-form">
+        <form onSubmit={handleSend} className="chat-form">
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
@@ -1504,7 +1283,6 @@ export function App() {
               </button>
             </div>
           </form>
-        )}
 
         {resultSlots.length > 0 || lastGenerationRequest ? (
           <div className="revision-row">

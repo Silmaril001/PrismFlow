@@ -119,7 +119,7 @@ if (!process.env.NODE_USE_ENV_PROXY) {
   process.env.NODE_USE_ENV_PROXY = "1";
 }
 
-const modelFromEnv = readEnv("OPENAI_MODEL") ?? "gpt-5.4-mini";
+const modelFromEnv = readEnv("OPENAI_MODEL") ?? "gpt-5.5";
 const timeoutFromEnv = Number(process.env.OPENAI_TIMEOUT_MS ?? "");
 const inferredDefaultTimeoutMs = /xhigh/i.test(modelFromEnv) ? 90_000 : 45_000;
 const openaiTimeoutMs =
