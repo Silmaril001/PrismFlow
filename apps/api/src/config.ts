@@ -260,6 +260,14 @@ const rateLimitHeavyBurstWindowSec = readIntegerEnv("RATE_LIMIT_HEAVY_BURST_WIND
 const rateLimitHeavyBurstMax = readIntegerEnv("RATE_LIMIT_HEAVY_BURST_MAX", 2, 1);
 const rateLimitHeavyWindowSec = readIntegerEnv("RATE_LIMIT_HEAVY_WINDOW_SEC", 60, 1);
 const rateLimitHeavyMax = readIntegerEnv("RATE_LIMIT_HEAVY_MAX", 6, 1);
+const rateLimitGenerateBurstWindowSec = readIntegerEnv(
+  "RATE_LIMIT_GENERATE_BURST_WINDOW_SEC",
+  10,
+  1,
+);
+const rateLimitGenerateBurstMax = readIntegerEnv("RATE_LIMIT_GENERATE_BURST_MAX", 10, 1);
+const rateLimitGenerateWindowSec = readIntegerEnv("RATE_LIMIT_GENERATE_WINDOW_SEC", 60, 1);
+const rateLimitGenerateMax = readIntegerEnv("RATE_LIMIT_GENERATE_MAX", 30, 1);
 const rateLimitLightWindowSec = readIntegerEnv("RATE_LIMIT_LIGHT_WINDOW_SEC", 60, 1);
 const rateLimitLightMax = readIntegerEnv("RATE_LIMIT_LIGHT_MAX", 120, 1);
 const rateLimitFavoritesManualWindowSec = readIntegerEnv(
@@ -270,6 +278,7 @@ const rateLimitFavoritesManualWindowSec = readIntegerEnv(
 const rateLimitFavoritesManualMax = readIntegerEnv("RATE_LIMIT_FAVORITES_MANUAL_MAX", 5, 1);
 const favoritesDuplicateWindowSec = readIntegerEnv("FAVORITES_DUPLICATE_WINDOW_SEC", 3600, 1);
 const sessionConcurrencyMax = readIntegerEnv("SESSION_CONCURRENCY_MAX", 1, 1);
+const sessionMessageConcurrencyMax = readIntegerEnv("SESSION_MESSAGE_CONCURRENCY_MAX", 10, 1);
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
@@ -281,12 +290,17 @@ export const config = {
   rateLimitHeavyBurstMax,
   rateLimitHeavyWindowSec,
   rateLimitHeavyMax,
+  rateLimitGenerateBurstWindowSec,
+  rateLimitGenerateBurstMax,
+  rateLimitGenerateWindowSec,
+  rateLimitGenerateMax,
   rateLimitLightWindowSec,
   rateLimitLightMax,
   rateLimitFavoritesManualWindowSec,
   rateLimitFavoritesManualMax,
   favoritesDuplicateWindowSec,
   sessionConcurrencyMax,
+  sessionMessageConcurrencyMax,
   openaiApiKey: readEnv("OPENAI_API_KEY"),
   openaiModel: modelFromEnv,
   openaiBaseUrl: readEnv("OPENAI_BASE_URL") ?? "https://api.openai.com/v1",

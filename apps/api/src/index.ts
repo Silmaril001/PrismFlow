@@ -238,7 +238,7 @@ async function resolveParentRevision(
   return parentRevision;
 }
 
-type RatePolicy = "heavy" | "light";
+type RatePolicy = "heavy" | "generate" | "light";
 type RequestWithTiming = FastifyRequest & {
   __startedAtMs?: number;
 };
@@ -379,6 +379,37 @@ function enforceRateLimit(
     return true;
   }
 
+  if (policy === "generate") {
+    const burst = consumeFixedWindowToken({
+      key: `generate:burst:${scope}:${clientAddress}`,
+      max: config.rateLimitGenerateBurstMax,
+      windowMs: config.rateLimitGenerateBurstWindowSec * 1000,
+    });
+    if (!burst.allowed) {
+      reply.header("Retry-After", String(burst.retryAfterSeconds));
+      reply.status(429).send({
+        error: `Too many requests for ${scope}. Please retry in ${burst.retryAfterSeconds}s.`,
+        retryAfterSeconds: burst.retryAfterSeconds,
+      });
+      return false;
+    }
+
+    const sustained = consumeFixedWindowToken({
+      key: `generate:sustained:${scope}:${clientAddress}`,
+      max: config.rateLimitGenerateMax,
+      windowMs: config.rateLimitGenerateWindowSec * 1000,
+    });
+    if (!sustained.allowed) {
+      reply.header("Retry-After", String(sustained.retryAfterSeconds));
+      reply.status(429).send({
+        error: `Too many requests for ${scope}. Please retry in ${sustained.retryAfterSeconds}s.`,
+        retryAfterSeconds: sustained.retryAfterSeconds,
+      });
+      return false;
+    }
+    return true;
+  }
+
   const light = consumeFixedWindowToken({
     key: `light:${scope}:${clientAddress}`,
     max: config.rateLimitLightMax,
@@ -459,9 +490,9 @@ function enforceFavoriteDuplicateGuard(
   return true;
 }
 
-function tryAcquireSessionSlot(sessionId: string): boolean {
+function tryAcquireSessionSlot(sessionId: string, maxConcurrent = config.sessionConcurrencyMax): boolean {
   const current = sessionInFlightById.get(sessionId) ?? 0;
-  if (current >= config.sessionConcurrencyMax) {
+  if (current >= maxConcurrent) {
     return false;
   }
   sessionInFlightById.set(sessionId, current + 1);
@@ -590,7 +621,7 @@ app.post("/v1/sessions", async (request, reply) => {
 });
 
 app.post("/v1/sessions/:id/messages", async (request, reply) => {
-  if (!enforceRateLimit(request, reply, "sessions-messages", "heavy")) {
+  if (!enforceRateLimit(request, reply, "sessions-messages", "generate")) {
     return;
   }
   const sessionId = (request.params as { id: string }).id;
@@ -605,7 +636,7 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  if (!tryAcquireSessionSlot(session.id)) {
+  if (!tryAcquireSessionSlot(session.id, config.sessionMessageConcurrencyMax)) {
     return sendSessionBusy(reply);
   }
 
