@@ -1,5 +1,5 @@
 import cors from "@fastify/cors";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
 import { z } from "zod";
@@ -18,7 +18,19 @@ import { runGeminiOptimize } from "./services/geminiOptimizeLLM.js";
 import { createAppStoreFromConfig } from "./store.js";
 
 const app = Fastify({
-  logger: true,
+  logger: {
+    level: "info",
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "req.headers['x-api-key']",
+        "res.headers['set-cookie']",
+      ],
+      censor: "[REDACTED]",
+    },
+  },
+  trustProxy: config.trustProxy,
   bodyLimit: 64 * 1024 * 1024,
 });
 const appStore = await createAppStoreFromConfig();
@@ -226,8 +238,315 @@ async function resolveParentRevision(
   return parentRevision;
 }
 
+type RatePolicy = "heavy" | "light";
+type RequestWithTiming = FastifyRequest & {
+  __startedAtMs?: number;
+};
+
+const rateCounterByKey = new Map<string, { windowStartMs: number; count: number }>();
+const sessionInFlightById = new Map<string, number>();
+
+const normalizedCorsExactOrigins = new Set<string>();
+const normalizedCorsWildcardSuffixes: string[] = [];
+for (const allowedOriginRaw of config.corsAllowOrigins) {
+  const trimmed = allowedOriginRaw.trim();
+  if (trimmed.length === 0) {
+    continue;
+  }
+  if (trimmed.startsWith("*.")) {
+    const suffix = trimmed.slice(2).toLowerCase();
+    if (suffix.length > 0) {
+      normalizedCorsWildcardSuffixes.push(suffix);
+    }
+    continue;
+  }
+  try {
+    normalizedCorsExactOrigins.add(new URL(trimmed).origin.toLowerCase());
+  } catch {
+    normalizedCorsExactOrigins.add(trimmed.toLowerCase());
+  }
+}
+
+function normalizeOrigin(origin: string): string | undefined {
+  try {
+    return new URL(origin).origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function isCorsOriginAllowed(origin: string): boolean {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) {
+    return false;
+  }
+  if (normalizedCorsExactOrigins.has(normalized)) {
+    return true;
+  }
+  const host = new URL(normalized).hostname.toLowerCase();
+  return normalizedCorsWildcardSuffixes.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+  );
+}
+
+function getClientAddress(request: FastifyRequest): string {
+  const forwardedFor = request.headers["x-forwarded-for"];
+  if (typeof forwardedFor === "string" && forwardedFor.trim().length > 0) {
+    return forwardedFor.split(",")[0]!.trim();
+  }
+  if (Array.isArray(forwardedFor) && forwardedFor.length > 0 && forwardedFor[0]?.trim()) {
+    return forwardedFor[0].trim();
+  }
+
+  const realIp = request.headers["x-real-ip"];
+  if (typeof realIp === "string" && realIp.trim().length > 0) {
+    return realIp.trim();
+  }
+  if (Array.isArray(realIp) && realIp.length > 0 && realIp[0]?.trim()) {
+    return realIp[0].trim();
+  }
+
+  return request.ip;
+}
+
+function consumeFixedWindowToken(params: {
+  key: string;
+  max: number;
+  windowMs: number;
+}): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  const current = rateCounterByKey.get(params.key);
+
+  if (!current || now - current.windowStartMs >= params.windowMs) {
+    rateCounterByKey.set(params.key, {
+      windowStartMs: now,
+      count: 1,
+    });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  if (current.count >= params.max) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((current.windowStartMs + params.windowMs - now) / 1000),
+    );
+    return { allowed: false, retryAfterSeconds };
+  }
+
+  current.count += 1;
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function enforceRateLimit(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  scope: string,
+  policy: RatePolicy,
+): boolean {
+  if (!config.rateLimitEnabled) {
+    return true;
+  }
+
+  const clientAddress = getClientAddress(request);
+  if (policy === "heavy") {
+    const burst = consumeFixedWindowToken({
+      key: `heavy:burst:${scope}:${clientAddress}`,
+      max: config.rateLimitHeavyBurstMax,
+      windowMs: config.rateLimitHeavyBurstWindowSec * 1000,
+    });
+    if (!burst.allowed) {
+      reply.header("Retry-After", String(burst.retryAfterSeconds));
+      reply.status(429).send({
+        error: `Too many requests for ${scope}. Please retry in ${burst.retryAfterSeconds}s.`,
+        retryAfterSeconds: burst.retryAfterSeconds,
+      });
+      return false;
+    }
+
+    const sustained = consumeFixedWindowToken({
+      key: `heavy:sustained:${scope}:${clientAddress}`,
+      max: config.rateLimitHeavyMax,
+      windowMs: config.rateLimitHeavyWindowSec * 1000,
+    });
+    if (!sustained.allowed) {
+      reply.header("Retry-After", String(sustained.retryAfterSeconds));
+      reply.status(429).send({
+        error: `Too many requests for ${scope}. Please retry in ${sustained.retryAfterSeconds}s.`,
+        retryAfterSeconds: sustained.retryAfterSeconds,
+      });
+      return false;
+    }
+    return true;
+  }
+
+  const light = consumeFixedWindowToken({
+    key: `light:${scope}:${clientAddress}`,
+    max: config.rateLimitLightMax,
+    windowMs: config.rateLimitLightWindowSec * 1000,
+  });
+  if (!light.allowed) {
+    reply.header("Retry-After", String(light.retryAfterSeconds));
+    reply.status(429).send({
+      error: `Too many requests for ${scope}. Please retry in ${light.retryAfterSeconds}s.`,
+      retryAfterSeconds: light.retryAfterSeconds,
+    });
+    return false;
+  }
+  return true;
+}
+
+function enforceManualFavoritesPublishLimit(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): boolean {
+  if (!config.rateLimitEnabled) {
+    return true;
+  }
+  const clientAddress = getClientAddress(request);
+  const manual = consumeFixedWindowToken({
+    key: `favorites:manual:${clientAddress}`,
+    max: config.rateLimitFavoritesManualMax,
+    windowMs: config.rateLimitFavoritesManualWindowSec * 1000,
+  });
+  if (!manual.allowed) {
+    reply.header("Retry-After", String(manual.retryAfterSeconds));
+    reply.status(429).send({
+      error: `Manual favorite publish limit reached. Please retry in ${manual.retryAfterSeconds}s.`,
+      retryAfterSeconds: manual.retryAfterSeconds,
+    });
+    return false;
+  }
+  return true;
+}
+
+function normalizeCodeForDuplicateCheck(code: string): string {
+  return code
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function computeCodeHash(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
+}
+
+function enforceFavoriteDuplicateGuard(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  code: string,
+): boolean {
+  const normalizedCode = normalizeCodeForDuplicateCheck(code);
+  if (!normalizedCode) {
+    return true;
+  }
+  const clientAddress = getClientAddress(request);
+  const codeHash = computeCodeHash(normalizedCode);
+  const duplicate = consumeFixedWindowToken({
+    key: `favorites:duplicate:${clientAddress}:${codeHash}`,
+    max: 1,
+    windowMs: config.favoritesDuplicateWindowSec * 1000,
+  });
+  if (!duplicate.allowed) {
+    reply.status(409).send({
+      error: "Duplicate favorite code detected recently. Please modify code or retry later.",
+      retryAfterSeconds: duplicate.retryAfterSeconds,
+    });
+    return false;
+  }
+  return true;
+}
+
+function tryAcquireSessionSlot(sessionId: string): boolean {
+  const current = sessionInFlightById.get(sessionId) ?? 0;
+  if (current >= config.sessionConcurrencyMax) {
+    return false;
+  }
+  sessionInFlightById.set(sessionId, current + 1);
+  return true;
+}
+
+function releaseSessionSlot(sessionId: string): void {
+  const current = sessionInFlightById.get(sessionId);
+  if (!current) {
+    return;
+  }
+  if (current <= 1) {
+    sessionInFlightById.delete(sessionId);
+    return;
+  }
+  sessionInFlightById.set(sessionId, current - 1);
+}
+
+function sendSessionBusy(reply: FastifyReply): FastifyReply {
+  return reply.status(409).send({
+    error: "Another request is already processing for this session. Please wait and retry.",
+  });
+}
+
+function sanitizeReadyCheck(
+  check: { ok: boolean; provider: string; storage?: { ok: boolean; provider: string } },
+) {
+  return {
+    ok: check.ok,
+    provider: check.provider,
+    storage: check.storage
+      ? {
+          ok: check.storage.ok,
+          provider: check.storage.provider,
+        }
+      : undefined,
+  };
+}
+
+function sendInternalServerError(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  error: unknown,
+  logMessage: string,
+): FastifyReply {
+  request.log.error({ err: error }, logMessage);
+  return reply.status(500).send({
+    error: "Internal server error.",
+  });
+}
+
 await app.register(cors, {
-  origin: true,
+  origin: (origin, callback) => {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    callback(null, isCorsOriginAllowed(origin));
+  },
+});
+
+app.addHook("onRequest", async (request) => {
+  (request as RequestWithTiming).__startedAtMs = Date.now();
+});
+
+app.addHook("onResponse", async (request, reply) => {
+  const startedAtMs = (request as RequestWithTiming).__startedAtMs;
+  if (!startedAtMs) {
+    return;
+  }
+  const durationMs = Date.now() - startedAtMs;
+  if (durationMs < config.slowRequestThresholdMs) {
+    return;
+  }
+
+  request.log.warn(
+    {
+      durationMs,
+      method: request.method,
+      url: request.url,
+      statusCode: reply.statusCode,
+      clientAddress: getClientAddress(request),
+    },
+    "Slow request detected",
+  );
 });
 
 app.addHook("onClose", async () => {
@@ -251,13 +570,16 @@ app.get("/ready", async (_request, reply) => {
   return reply.status(ok ? 200 : 503).send({
     ok,
     checks: {
-      appStore: appStoreHealth,
-      favorites,
+      appStore: sanitizeReadyCheck(appStoreHealth),
+      favorites: sanitizeReadyCheck(favorites),
     },
   });
 });
 
 app.post("/v1/sessions", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "sessions-create", "light")) {
+    return;
+  }
   const parsed = createSessionBody.safeParse(request.body);
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
@@ -268,6 +590,9 @@ app.post("/v1/sessions", async (request, reply) => {
 });
 
 app.post("/v1/sessions/:id/messages", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "sessions-messages", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const parsed = messageBody.safeParse(request.body);
 
@@ -280,103 +605,110 @@ app.post("/v1/sessions/:id/messages", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  if (parsed.data.startNewShader) {
-    await appStore.resetIdeation(session.id);
-  }
-
-  const latestRevision = await appStore.getLatestRevisionBySession(session.id);
-  const storedLatestCode = latestRevision
-    ? (await appStore.getArtifactByRevisionAndKind(latestRevision.id, "glsl_fragment"))?.content
-    : undefined;
-  const latestCode =
-    parsed.data.currentCode && parsed.data.currentCode.trim().length > 0
-      ? parsed.data.currentCode
-      : storedLatestCode;
-  const useIteration =
-    (Boolean(latestRevision) && !parsed.data.startNewShader) || parsed.data.debugMode;
-  const modelOverride =
-    parsed.data.debugMode ? config.openaiDebugModel : parsed.data.model?.trim() || undefined;
-  const baseUrlOverride =
-    parsed.data.debugMode ? config.openaiDebugBaseUrl : parsed.data.baseUrl?.trim() || undefined;
-  const channelOverride: LlmChannel | undefined = parsed.data.debugMode
-    ? undefined
-    : parsed.data.channel;
-  const referenceImageDataUrls = parsed.data.referenceImages.map((image) => image.dataUrl);
-  if (parsed.data.debugMode && !parsed.data.currentCode?.trim()) {
-    return reply.status(400).send({
-      error: "debugMode requires currentCode.",
-    });
-  }
-  if (useIteration && !latestCode) {
-    return reply.status(409).send({
-      error: "Current GLSL context is missing. Please start a new shader and retry.",
-    });
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
   }
 
   try {
-    const pipelineResult = await orchestrator.run({
-      session,
-      userMessage: parsed.data.content,
-      referenceImageDataUrls,
-      previewCompileErrors: parsed.data.previewCompileErrors,
-      modelOverride,
-      baseUrlOverride,
-      channelOverride,
-      debugMode: parsed.data.debugMode,
-      latestRevisionExists: useIteration,
-      latestCode,
-    });
-
-    const promptText =
-      parsed.data.content.trim().length > 0
-        ? parsed.data.content
-        : `[image-only request, refs=${referenceImageDataUrls.length}]`;
-
-    const revision = await appStore.createRevision({
-      sessionId: session.id,
-      parentRevisionId: useIteration ? (latestRevision?.id ?? null) : null,
-      prompt: promptText,
-      llmModel: pipelineResult.llmModel,
-      requestedModel: pipelineResult.requestedModel,
-      effectiveModel: pipelineResult.effectiveModel,
-      fallbackUsed: pipelineResult.fallbackUsed,
-      llmLatencyMs: pipelineResult.llmLatencyMs,
-      compileStatus: pipelineResult.compileStatus,
-      compileErrors: pipelineResult.compileErrors,
-    });
-
-    const artifact = await appStore.createArtifact({
-      revisionId: revision.id,
-      kind: "glsl_fragment",
-      content: pipelineResult.code,
-      meta: {
-        mode: session.mode,
-      },
-    });
-
-    return reply.send({
-      revision,
-      artifact: {
-        id: artifact.id,
-        kind: artifact.kind,
-        uri: artifact.uri,
-      },
-      code: pipelineResult.code,
-      startedNewShader: parsed.data.startNewShader,
-    });
-  } catch (error) {
-    if (error instanceof PipelineUnavailableError) {
-      return reply.status(501).send({ error: error.message });
+    if (parsed.data.startNewShader) {
+      await appStore.resetIdeation(session.id);
     }
 
-    request.log.error({ err: error }, "Pipeline execution failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unknown internal error",
-    });
+    const latestRevision = await appStore.getLatestRevisionBySession(session.id);
+    const storedLatestCode = latestRevision
+      ? (await appStore.getArtifactByRevisionAndKind(latestRevision.id, "glsl_fragment"))?.content
+      : undefined;
+    const latestCode =
+      parsed.data.currentCode && parsed.data.currentCode.trim().length > 0
+        ? parsed.data.currentCode
+        : storedLatestCode;
+    const useIteration =
+      (Boolean(latestRevision) && !parsed.data.startNewShader) || parsed.data.debugMode;
+    const modelOverride =
+      parsed.data.debugMode ? config.openaiDebugModel : parsed.data.model?.trim() || undefined;
+    const baseUrlOverride =
+      parsed.data.debugMode ? config.openaiDebugBaseUrl : parsed.data.baseUrl?.trim() || undefined;
+    const channelOverride: LlmChannel | undefined = parsed.data.debugMode
+      ? undefined
+      : parsed.data.channel;
+    const referenceImageDataUrls = parsed.data.referenceImages.map((image) => image.dataUrl);
+    if (parsed.data.debugMode && !parsed.data.currentCode?.trim()) {
+      return reply.status(400).send({
+        error: "debugMode requires currentCode.",
+      });
+    }
+    if (useIteration && !latestCode) {
+      return reply.status(409).send({
+        error: "Current GLSL context is missing. Please start a new shader and retry.",
+      });
+    }
+
+    try {
+      const pipelineResult = await orchestrator.run({
+        session,
+        userMessage: parsed.data.content,
+        referenceImageDataUrls,
+        previewCompileErrors: parsed.data.previewCompileErrors,
+        modelOverride,
+        baseUrlOverride,
+        channelOverride,
+        debugMode: parsed.data.debugMode,
+        latestRevisionExists: useIteration,
+        latestCode,
+      });
+
+      const promptText =
+        parsed.data.content.trim().length > 0
+          ? parsed.data.content
+          : `[image-only request, refs=${referenceImageDataUrls.length}]`;
+
+      const revision = await appStore.createRevision({
+        sessionId: session.id,
+        parentRevisionId: useIteration ? (latestRevision?.id ?? null) : null,
+        prompt: promptText,
+        llmModel: pipelineResult.llmModel,
+        requestedModel: pipelineResult.requestedModel,
+        effectiveModel: pipelineResult.effectiveModel,
+        fallbackUsed: pipelineResult.fallbackUsed,
+        llmLatencyMs: pipelineResult.llmLatencyMs,
+        compileStatus: pipelineResult.compileStatus,
+        compileErrors: pipelineResult.compileErrors,
+      });
+
+      const artifact = await appStore.createArtifact({
+        revisionId: revision.id,
+        kind: "glsl_fragment",
+        content: pipelineResult.code,
+        meta: {
+          mode: session.mode,
+        },
+      });
+
+      return reply.send({
+        revision,
+        artifact: {
+          id: artifact.id,
+          kind: artifact.kind,
+          uri: artifact.uri,
+        },
+        code: pipelineResult.code,
+        startedNewShader: parsed.data.startNewShader,
+      });
+    } catch (error) {
+      if (error instanceof PipelineUnavailableError) {
+        return reply.status(501).send({ error: error.message });
+      }
+      return sendInternalServerError(request, reply, error, "Pipeline execution failed");
+    }
+  } finally {
+    releaseSessionSlot(session.id);
   }
 });
 
 app.get("/v1/sessions/:id/ideation/state", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "ideation-state", "light")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const session = await appStore.getSession(sessionId);
   if (!session) {
@@ -416,6 +748,9 @@ app.get("/v1/sessions/:id/ideation/state", async (request, reply) => {
 });
 
 app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "ideation-messages", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const parsed = ideationMessageBody.safeParse(request.body);
   if (!parsed.success) {
@@ -427,137 +762,159 @@ app.post("/v1/sessions/:id/ideation/messages", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const existingAsset = await appStore.getIdeationAsset(session.id);
-  const existingAssetPayload = existingAsset
-    ? await appStore.getIdeationAssetPayload(session.id)
-    : undefined;
-  let assetForInference = existingAsset;
-  let assetPayloadForInference = existingAssetPayload;
-
-  if (parsed.data.asset) {
-    try {
-      const parsedAsset = parseUploadedAsset(parsed.data.asset);
-      const parsedAssetBase64 = parsedAsset.bytes.toString("base64");
-      if (existingAsset) {
-        if (!existingAssetPayload) {
-          return reply.status(500).send({
-            error: "Ideation asset payload is missing. Please click 新 Shader and retry.",
-          });
-        }
-        const existingBytes = Buffer.from(existingAssetPayload.dataBase64, "base64");
-        const sameAsset =
-          existingAsset.kind === parsedAsset.kind &&
-          existingAsset.mimeType === parsedAsset.mimeType &&
-          hashBuffer(existingBytes) === hashBuffer(parsedAsset.bytes);
-        if (!sameAsset) {
-          return reply.status(409).send({
-            error:
-              "当前需求提炼会话已绑定一份素材。可继续对话（系统会自动附带该素材）；如需更换，请先点击“新 Shader”重置。",
-          });
-        }
-        assetForInference = existingAsset;
-        assetPayloadForInference = existingAssetPayload;
-      } else {
-        assetForInference = await appStore.setIdeationAsset(session.id, {
-          kind: parsedAsset.kind,
-          fileName: parsedAsset.safeFileName,
-          mimeType: parsedAsset.mimeType,
-          bytes: parsedAsset.bytes.length,
-          dataBase64: parsedAssetBase64,
-        });
-        assetPayloadForInference = {
-          kind: parsedAsset.kind,
-          mimeType: parsedAsset.mimeType,
-          dataBase64: parsedAssetBase64,
-        };
-      }
-    } catch (error) {
-      return reply.status(400).send({
-        error: error instanceof Error ? error.message : "Failed to parse uploaded asset.",
-      });
-    }
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
   }
 
-  const previousMessages = await appStore.listIdeationMessages(session.id);
-  const userText = parsed.data.content.trim().length > 0 ? parsed.data.content.trim() : "请分析刚上传的素材并给出可用于 GLSL 生成的专业提示词。";
-
   try {
-    const ideation = await runGeminiIdeation({
-      userMessage: userText,
-      history: previousMessages.map((item) => ({ role: item.role, text: item.text })),
-      asset: assetForInference && assetPayloadForInference
-        ? {
-            mimeType: assetForInference.mimeType,
-            dataBase64: assetPayloadForInference.dataBase64,
-          }
-        : undefined,
-    });
-    let linkedReferenceImages: string[] = [];
-    if (assetForInference && assetPayloadForInference) {
+    const existingAsset = await appStore.getIdeationAsset(session.id);
+    const existingAssetPayload = existingAsset
+      ? await appStore.getIdeationAssetPayload(session.id)
+      : undefined;
+    let assetForInference = existingAsset;
+    let assetPayloadForInference = existingAssetPayload;
+
+    if (parsed.data.asset) {
       try {
-        linkedReferenceImages = await buildLinkedReferenceDataUrls({
-          mimeType: assetForInference.mimeType,
-          dataBase64: assetPayloadForInference.dataBase64,
-        });
+        const parsedAsset = parseUploadedAsset(parsed.data.asset);
+        const parsedAssetBase64 = parsedAsset.bytes.toString("base64");
+        if (existingAsset) {
+          if (!existingAssetPayload) {
+            return reply.status(500).send({
+              error: "Ideation asset payload is missing. Please click 新 Shader and retry.",
+            });
+          }
+          const existingBytes = Buffer.from(existingAssetPayload.dataBase64, "base64");
+          const sameAsset =
+            existingAsset.kind === parsedAsset.kind &&
+            existingAsset.mimeType === parsedAsset.mimeType &&
+            hashBuffer(existingBytes) === hashBuffer(parsedAsset.bytes);
+          if (!sameAsset) {
+            return reply.status(409).send({
+              error:
+                "当前需求提炼会话已绑定一份素材。可继续对话（系统会自动附带该素材）；如需更换，请先点击“新 Shader”重置。",
+            });
+          }
+          assetForInference = existingAsset;
+          assetPayloadForInference = existingAssetPayload;
+        } else {
+          assetForInference = await appStore.setIdeationAsset(session.id, {
+            kind: parsedAsset.kind,
+            fileName: parsedAsset.safeFileName,
+            mimeType: parsedAsset.mimeType,
+            bytes: parsedAsset.bytes.length,
+            dataBase64: parsedAssetBase64,
+          });
+          assetPayloadForInference = {
+            kind: parsedAsset.kind,
+            mimeType: parsedAsset.mimeType,
+            dataBase64: parsedAssetBase64,
+          };
+        }
       } catch (error) {
-        request.log.warn({ err: error }, "Failed to build linked references for ideation message");
+        return reply.status(400).send({
+          error: error instanceof Error ? error.message : "Failed to parse uploaded asset.",
+        });
       }
     }
 
-    const userMessage = await appStore.appendIdeationMessage(session.id, {
-      role: "user",
-      text: userText,
-    });
-    const assistantMessage = await appStore.appendIdeationMessage(session.id, {
-      role: "assistant",
-      text: ideation.rawText,
-      extractedPrompt: ideation.glslPrompt,
-    });
+    const previousMessages = await appStore.listIdeationMessages(session.id);
+    const userText =
+      parsed.data.content.trim().length > 0
+        ? parsed.data.content.trim()
+        : "请分析刚上传的素材并给出可用于 GLSL 生成的专业提示词。";
 
-    return reply.send({
-      userMessage,
-      assistantMessage,
-      asset: assetForInference
-        ? {
-            id: assetForInference.id,
-            kind: assetForInference.kind,
-            fileName: assetForInference.fileName,
+    try {
+      const ideation = await runGeminiIdeation({
+        userMessage: userText,
+        history: previousMessages.map((item) => ({ role: item.role, text: item.text })),
+        asset:
+          assetForInference && assetPayloadForInference
+            ? {
+                mimeType: assetForInference.mimeType,
+                dataBase64: assetPayloadForInference.dataBase64,
+              }
+            : undefined,
+      });
+      let linkedReferenceImages: string[] = [];
+      if (assetForInference && assetPayloadForInference) {
+        try {
+          linkedReferenceImages = await buildLinkedReferenceDataUrls({
             mimeType: assetForInference.mimeType,
-            bytes: assetForInference.bytes,
-            createdAt: assetForInference.createdAt,
-          }
-        : null,
-      model: {
-        requested: ideation.requestedModel,
-        effective: ideation.effectiveModel,
-        fallbackUsed: ideation.fallbackUsed,
-        latencyMs: ideation.latencyMs,
-      },
-      linkedReferenceImages,
-      extractedPrompt: ideation.glslPrompt,
-      analysis: ideation.analysis,
-    });
-  } catch (error) {
-    request.log.error({ err: error }, "Ideation message failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Ideation flow failed.",
-    });
+            dataBase64: assetPayloadForInference.dataBase64,
+          });
+        } catch (error) {
+          request.log.warn({ err: error }, "Failed to build linked references for ideation message");
+        }
+      }
+
+      const userMessage = await appStore.appendIdeationMessage(session.id, {
+        role: "user",
+        text: userText,
+      });
+      const assistantMessage = await appStore.appendIdeationMessage(session.id, {
+        role: "assistant",
+        text: ideation.rawText,
+        extractedPrompt: ideation.glslPrompt,
+      });
+
+      return reply.send({
+        userMessage,
+        assistantMessage,
+        asset: assetForInference
+          ? {
+              id: assetForInference.id,
+              kind: assetForInference.kind,
+              fileName: assetForInference.fileName,
+              mimeType: assetForInference.mimeType,
+              bytes: assetForInference.bytes,
+              createdAt: assetForInference.createdAt,
+            }
+          : null,
+        model: {
+          requested: ideation.requestedModel,
+          effective: ideation.effectiveModel,
+          fallbackUsed: ideation.fallbackUsed,
+          latencyMs: ideation.latencyMs,
+        },
+        linkedReferenceImages,
+        extractedPrompt: ideation.glslPrompt,
+        analysis: ideation.analysis,
+      });
+    } catch (error) {
+      return sendInternalServerError(request, reply, error, "Ideation message failed");
+    }
+  } finally {
+    releaseSessionSlot(session.id);
   }
 });
 
 app.post("/v1/sessions/:id/ideation/reset", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "ideation-reset", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const session = await appStore.getSession(sessionId);
   if (!session) {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  await appStore.resetIdeation(session.id);
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
+  }
 
-  return reply.send({ ok: true });
+  try {
+    await appStore.resetIdeation(session.id);
+    return reply.send({ ok: true });
+  } finally {
+    releaseSessionSlot(session.id);
+  }
 });
 
 app.post("/v1/sessions/:id/optimize/suggest", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "optimize-suggest", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const parsed = optimizeSuggestBody.safeParse(request.body);
   if (!parsed.success) {
@@ -569,47 +926,55 @@ app.post("/v1/sessions/:id/optimize/suggest", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const ideationAsset = await appStore.getIdeationAsset(session.id);
-  const ideationAssetPayload = ideationAsset
-    ? await appStore.getIdeationAssetPayload(session.id)
-    : undefined;
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
+  }
 
   try {
-    const optimize = await runGeminiOptimize({
-      targetPrompt: parsed.data.targetPrompt,
-      currentCode: parsed.data.currentCode,
-      previewFrameDataUrl: parsed.data.previewFrameDataUrl,
-      userInstruction: parsed.data.userInstruction,
-      ideationAsset: ideationAsset && ideationAssetPayload
-        ? {
-            mimeType: ideationAsset.mimeType,
-            dataBase64: ideationAssetPayload.dataBase64,
-          }
-        : undefined,
-    });
+    const ideationAsset = await appStore.getIdeationAsset(session.id);
+    const ideationAssetPayload = ideationAsset
+      ? await appStore.getIdeationAssetPayload(session.id)
+      : undefined;
 
-    return reply.send({
-      optimize: {
-        analysis: optimize.analysis,
-        prompt: optimize.optimizePrompt,
-        model: {
-          requested: optimize.requestedModel,
-          effective: optimize.effectiveModel,
-          fallbackUsed: optimize.fallbackUsed,
-          latencyMs: optimize.latencyMs,
+    try {
+      const optimize = await runGeminiOptimize({
+        targetPrompt: parsed.data.targetPrompt,
+        currentCode: parsed.data.currentCode,
+        previewFrameDataUrl: parsed.data.previewFrameDataUrl,
+        userInstruction: parsed.data.userInstruction,
+        ideationAsset: ideationAsset && ideationAssetPayload
+          ? {
+              mimeType: ideationAsset.mimeType,
+              dataBase64: ideationAssetPayload.dataBase64,
+            }
+          : undefined,
+      });
+
+      return reply.send({
+        optimize: {
+          analysis: optimize.analysis,
+          prompt: optimize.optimizePrompt,
+          model: {
+            requested: optimize.requestedModel,
+            effective: optimize.effectiveModel,
+            fallbackUsed: optimize.fallbackUsed,
+            latencyMs: optimize.latencyMs,
+          },
+          assetUsed: Boolean(ideationAsset && ideationAssetPayload),
         },
-        assetUsed: Boolean(ideationAsset && ideationAssetPayload),
-      },
-    });
-  } catch (error) {
-    request.log.error({ err: error }, "Optimize suggestion failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unknown internal error",
-    });
+      });
+    } catch (error) {
+      return sendInternalServerError(request, reply, error, "Optimize suggestion failed");
+    }
+  } finally {
+    releaseSessionSlot(session.id);
   }
 });
 
 app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "optimize-apply", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const parsed = optimizeApplyBody.safeParse(request.body);
   if (!parsed.success) {
@@ -621,73 +986,80 @@ app.post("/v1/sessions/:id/optimize/apply", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const parentRevision = await resolveParentRevision(session.id, parsed.data.parentRevisionId);
-  if (parsed.data.parentRevisionId && !parentRevision) {
-    return reply.status(404).send({ error: "Parent revision not found." });
-  }
-  if (parentRevision && parentRevision.sessionId !== session.id) {
-    return reply.status(409).send({ error: "Parent revision does not belong to this session." });
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
   }
 
   try {
-    const optimizeUserMessage = [
-      "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
-      parsed.data.optimizePrompt,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
-    const pipelineResult = await orchestrator.run({
-      session,
-      userMessage: optimizeUserMessage,
-      referenceImageDataUrls: [],
-      modelOverride: parsed.data.model?.trim() || undefined,
-      baseUrlOverride: parsed.data.baseUrl?.trim() || undefined,
-      channelOverride: parsed.data.channel,
-      debugMode: false,
-      latestRevisionExists: true,
-      latestCode: parsed.data.currentCode,
-    });
-
-    const revision = await appStore.createRevision({
-      sessionId: session.id,
-      parentRevisionId: parentRevision?.id ?? null,
-      prompt: `[one-click optimize apply]\n${parsed.data.optimizePrompt}`,
-      llmModel: pipelineResult.llmModel,
-      requestedModel: pipelineResult.requestedModel,
-      effectiveModel: pipelineResult.effectiveModel,
-      fallbackUsed: pipelineResult.fallbackUsed,
-      llmLatencyMs: pipelineResult.llmLatencyMs,
-      compileStatus: pipelineResult.compileStatus,
-      compileErrors: pipelineResult.compileErrors,
-    });
-
-    await appStore.createArtifact({
-      revisionId: revision.id,
-      kind: "glsl_fragment",
-      content: pipelineResult.code,
-      meta: {
-        mode: session.mode,
-      },
-    });
-
-    return reply.send({
-      revision,
-      code: pipelineResult.code,
-    });
-  } catch (error) {
-    if (error instanceof PipelineUnavailableError) {
-      return reply.status(501).send({ error: error.message });
+    const parentRevision = await resolveParentRevision(session.id, parsed.data.parentRevisionId);
+    if (parsed.data.parentRevisionId && !parentRevision) {
+      return reply.status(404).send({ error: "Parent revision not found." });
+    }
+    if (parentRevision && parentRevision.sessionId !== session.id) {
+      return reply.status(409).send({ error: "Parent revision does not belong to this session." });
     }
 
-    request.log.error({ err: error }, "Optimize apply failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unknown internal error",
-    });
+    try {
+      const optimizeUserMessage = [
+        "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
+        parsed.data.optimizePrompt,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const pipelineResult = await orchestrator.run({
+        session,
+        userMessage: optimizeUserMessage,
+        referenceImageDataUrls: [],
+        modelOverride: parsed.data.model?.trim() || undefined,
+        baseUrlOverride: parsed.data.baseUrl?.trim() || undefined,
+        channelOverride: parsed.data.channel,
+        debugMode: false,
+        latestRevisionExists: true,
+        latestCode: parsed.data.currentCode,
+      });
+
+      const revision = await appStore.createRevision({
+        sessionId: session.id,
+        parentRevisionId: parentRevision?.id ?? null,
+        prompt: `[one-click optimize apply]\n${parsed.data.optimizePrompt}`,
+        llmModel: pipelineResult.llmModel,
+        requestedModel: pipelineResult.requestedModel,
+        effectiveModel: pipelineResult.effectiveModel,
+        fallbackUsed: pipelineResult.fallbackUsed,
+        llmLatencyMs: pipelineResult.llmLatencyMs,
+        compileStatus: pipelineResult.compileStatus,
+        compileErrors: pipelineResult.compileErrors,
+      });
+
+      await appStore.createArtifact({
+        revisionId: revision.id,
+        kind: "glsl_fragment",
+        content: pipelineResult.code,
+        meta: {
+          mode: session.mode,
+        },
+      });
+
+      return reply.send({
+        revision,
+        code: pipelineResult.code,
+      });
+    } catch (error) {
+      if (error instanceof PipelineUnavailableError) {
+        return reply.status(501).send({ error: error.message });
+      }
+      return sendInternalServerError(request, reply, error, "Optimize apply failed");
+    }
+  } finally {
+    releaseSessionSlot(session.id);
   }
 });
 
 app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "optimize-current", "heavy")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const parsed = optimizeBody.safeParse(request.body);
   if (!parsed.success) {
@@ -699,110 +1071,120 @@ app.post("/v1/sessions/:id/optimize-current", async (request, reply) => {
     return reply.status(404).send({ error: "Session not found." });
   }
 
-  const parentRevision =
-    parsed.data.parentRevisionId && parsed.data.parentRevisionId.trim().length > 0
-      ? await appStore.getRevision(parsed.data.parentRevisionId.trim())
-      : await appStore.getLatestRevisionBySession(session.id);
-  if (parsed.data.parentRevisionId && !parentRevision) {
-    return reply.status(404).send({ error: "Parent revision not found." });
+  if (!tryAcquireSessionSlot(session.id)) {
+    return sendSessionBusy(reply);
   }
-  if (parentRevision && parentRevision.sessionId !== session.id) {
-    return reply.status(409).send({ error: "Parent revision does not belong to this session." });
-  }
-
-  const ideationAsset = await appStore.getIdeationAsset(session.id);
-  const ideationAssetPayload = ideationAsset
-    ? await appStore.getIdeationAssetPayload(session.id)
-    : undefined;
 
   try {
-    const optimize = await runGeminiOptimize({
-      targetPrompt: parsed.data.targetPrompt,
-      currentCode: parsed.data.currentCode,
-      previewFrameDataUrl: parsed.data.previewFrameDataUrl,
-      userInstruction: parsed.data.userInstruction,
-      ideationAsset: ideationAsset && ideationAssetPayload
-        ? {
-            mimeType: ideationAsset.mimeType,
-            dataBase64: ideationAssetPayload.dataBase64,
-          }
-        : undefined,
-    });
-
-    const optimizeUserMessage = [
-      "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
-      optimize.optimizePrompt,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
-    const pipelineResult = await orchestrator.run({
-      session,
-      userMessage: optimizeUserMessage,
-      referenceImageDataUrls: [parsed.data.previewFrameDataUrl],
-      modelOverride: parsed.data.model?.trim() || undefined,
-      baseUrlOverride: parsed.data.baseUrl?.trim() || undefined,
-      channelOverride: parsed.data.channel,
-      debugMode: false,
-      latestRevisionExists: true,
-      latestCode: parsed.data.currentCode,
-    });
-
-    const revision = await appStore.createRevision({
-      sessionId: session.id,
-      parentRevisionId: parentRevision?.id ?? null,
-      prompt: `[one-click optimize]\n${optimize.optimizePrompt}`,
-      llmModel: pipelineResult.llmModel,
-      requestedModel: pipelineResult.requestedModel,
-      effectiveModel: pipelineResult.effectiveModel,
-      fallbackUsed: pipelineResult.fallbackUsed,
-      llmLatencyMs: pipelineResult.llmLatencyMs,
-      compileStatus: pipelineResult.compileStatus,
-      compileErrors: pipelineResult.compileErrors,
-    });
-
-    await appStore.createArtifact({
-      revisionId: revision.id,
-      kind: "glsl_fragment",
-      content: pipelineResult.code,
-      meta: {
-        mode: session.mode,
-      },
-    });
-
-    return reply.send({
-      revision,
-      code: pipelineResult.code,
-      optimize: {
-        analysis: optimize.analysis,
-        prompt: optimize.optimizePrompt,
-        model: {
-          requested: optimize.requestedModel,
-          effective: optimize.effectiveModel,
-          fallbackUsed: optimize.fallbackUsed,
-          latencyMs: optimize.latencyMs,
-        },
-        assetUsed: Boolean(ideationAsset && ideationAssetPayload),
-      },
-    });
-  } catch (error) {
-    if (error instanceof PipelineUnavailableError) {
-      return reply.status(501).send({ error: error.message });
+    const parentRevision =
+      parsed.data.parentRevisionId && parsed.data.parentRevisionId.trim().length > 0
+        ? await appStore.getRevision(parsed.data.parentRevisionId.trim())
+        : await appStore.getLatestRevisionBySession(session.id);
+    if (parsed.data.parentRevisionId && !parentRevision) {
+      return reply.status(404).send({ error: "Parent revision not found." });
+    }
+    if (parentRevision && parentRevision.sessionId !== session.id) {
+      return reply.status(409).send({ error: "Parent revision does not belong to this session." });
     }
 
-    request.log.error({ err: error }, "Optimize current shader failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unknown internal error",
-    });
+    const ideationAsset = await appStore.getIdeationAsset(session.id);
+    const ideationAssetPayload = ideationAsset
+      ? await appStore.getIdeationAssetPayload(session.id)
+      : undefined;
+
+    try {
+      const optimize = await runGeminiOptimize({
+        targetPrompt: parsed.data.targetPrompt,
+        currentCode: parsed.data.currentCode,
+        previewFrameDataUrl: parsed.data.previewFrameDataUrl,
+        userInstruction: parsed.data.userInstruction,
+        ideationAsset: ideationAsset && ideationAssetPayload
+          ? {
+              mimeType: ideationAsset.mimeType,
+              dataBase64: ideationAssetPayload.dataBase64,
+            }
+          : undefined,
+      });
+
+      const optimizeUserMessage = [
+        "请基于以下优化建议修改当前 GLSL，优先修正核心差异并尽量保留已有成功部分。",
+        optimize.optimizePrompt,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const pipelineResult = await orchestrator.run({
+        session,
+        userMessage: optimizeUserMessage,
+        referenceImageDataUrls: [parsed.data.previewFrameDataUrl],
+        modelOverride: parsed.data.model?.trim() || undefined,
+        baseUrlOverride: parsed.data.baseUrl?.trim() || undefined,
+        channelOverride: parsed.data.channel,
+        debugMode: false,
+        latestRevisionExists: true,
+        latestCode: parsed.data.currentCode,
+      });
+
+      const revision = await appStore.createRevision({
+        sessionId: session.id,
+        parentRevisionId: parentRevision?.id ?? null,
+        prompt: `[one-click optimize]\n${optimize.optimizePrompt}`,
+        llmModel: pipelineResult.llmModel,
+        requestedModel: pipelineResult.requestedModel,
+        effectiveModel: pipelineResult.effectiveModel,
+        fallbackUsed: pipelineResult.fallbackUsed,
+        llmLatencyMs: pipelineResult.llmLatencyMs,
+        compileStatus: pipelineResult.compileStatus,
+        compileErrors: pipelineResult.compileErrors,
+      });
+
+      await appStore.createArtifact({
+        revisionId: revision.id,
+        kind: "glsl_fragment",
+        content: pipelineResult.code,
+        meta: {
+          mode: session.mode,
+        },
+      });
+
+      return reply.send({
+        revision,
+        code: pipelineResult.code,
+        optimize: {
+          analysis: optimize.analysis,
+          prompt: optimize.optimizePrompt,
+          model: {
+            requested: optimize.requestedModel,
+            effective: optimize.effectiveModel,
+            fallbackUsed: optimize.fallbackUsed,
+            latencyMs: optimize.latencyMs,
+          },
+          assetUsed: Boolean(ideationAsset && ideationAssetPayload),
+        },
+      });
+    } catch (error) {
+      if (error instanceof PipelineUnavailableError) {
+        return reply.status(501).send({ error: error.message });
+      }
+      return sendInternalServerError(request, reply, error, "Optimize current shader failed");
+    }
+  } finally {
+    releaseSessionSlot(session.id);
   }
 });
 
 app.get("/v1/favorites", async (_request, reply) => {
+  if (!enforceRateLimit(_request, reply, "favorites-list", "light")) {
+    return;
+  }
   const favorites = await favoritesStore.listFavorites();
   return reply.send({ favorites });
 });
 
 app.get("/v1/favorites/:id", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "favorites-detail", "light")) {
+    return;
+  }
   const favoriteId = (request.params as { id: string }).id;
   const favorite = await favoritesStore.getFavoriteById(favoriteId);
   if (!favorite) {
@@ -812,9 +1194,24 @@ app.get("/v1/favorites/:id", async (request, reply) => {
 });
 
 app.post("/v1/favorites", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "favorites-create", "heavy")) {
+    return;
+  }
   const parsed = favoriteCreateBody.safeParse(request.body);
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+
+  const hasSessionLink = Boolean(
+    (parsed.data.sessionId && parsed.data.sessionId.trim().length > 0) ||
+      (parsed.data.revisionId && parsed.data.revisionId.trim().length > 0),
+  );
+  const isManualFavoritePublish = !hasSessionLink;
+  if (!enforceFavoriteDuplicateGuard(request, reply, parsed.data.code)) {
+    return;
+  }
+  if (isManualFavoritePublish && !enforceManualFavoritesPublishLimit(request, reply)) {
+    return;
   }
 
   const manualName = parsed.data.name?.trim();
@@ -856,10 +1253,7 @@ app.post("/v1/favorites", async (request, reply) => {
       },
     });
   } catch (error) {
-    request.log.error({ err: error }, "Create favorite failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Create favorite failed.",
-    });
+    return sendInternalServerError(request, reply, error, "Create favorite failed");
   }
 });
 
@@ -878,6 +1272,9 @@ app.post("/v1/favorites/:id/archive", async (request, reply) => {
 });
 
 app.get("/v1/sessions/:id/revisions/latest", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "revisions-latest", "light")) {
+    return;
+  }
   const sessionId = (request.params as { id: string }).id;
   const session = await appStore.getSession(sessionId);
   if (!session) {
@@ -898,6 +1295,9 @@ app.get("/v1/sessions/:id/revisions/latest", async (request, reply) => {
 });
 
 app.post("/v1/revisions/:id/export", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "revisions-export", "light")) {
+    return;
+  }
   const revisionId = (request.params as { id: string }).id;
   const parsed = exportBody.safeParse(request.body);
   if (!parsed.success) {
@@ -932,17 +1332,13 @@ app.post("/v1/revisions/:id/export", async (request, reply) => {
     if (error instanceof PipelineUnavailableError) {
       return reply.status(501).send({ error: error.message });
     }
-
-    request.log.error({ err: error }, "Pipeline export failed");
-    return reply.status(500).send({
-      error: error instanceof Error ? error.message : "Unknown internal error",
-    });
+    return sendInternalServerError(request, reply, error, "Pipeline export failed");
   }
 });
 
-app.setErrorHandler((error, _request, reply) => {
-  const message = error instanceof Error ? error.message : "Unknown internal error";
-  reply.status(500).send({ error: message });
+app.setErrorHandler((error, request, reply) => {
+  request.log.error({ err: error }, "Unhandled request error");
+  reply.status(500).send({ error: "Internal server error." });
 });
 
 app.listen({ port: config.port, host: "0.0.0.0" }).catch((error) => {

@@ -28,6 +28,34 @@ function readBooleanEnv(name: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+function readIntegerEnv(name: string, defaultValue: number, minValue?: number): number {
+  const raw = readEnv(name);
+  if (!raw) {
+    return defaultValue;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return defaultValue;
+  }
+  const integer = Math.floor(parsed);
+  if (typeof minValue === "number" && integer < minValue) {
+    return defaultValue;
+  }
+  return integer;
+}
+
+function readCsvEnv(name: string): string[] | undefined {
+  const raw = process.env[name];
+  if (!raw) {
+    return undefined;
+  }
+  const values = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return values.length > 0 ? values : undefined;
+}
+
 function hasProxyEnvConfigured(): boolean {
   return Boolean(
     readEnv("HTTPS_PROXY") ||
@@ -216,9 +244,49 @@ const promptTemplatesDirFromEnv = readEnv("PROMPT_TEMPLATES_DIR");
 const defaultPromptTemplatesDir = fileURLToPath(new URL("../prompts", import.meta.url));
 const defaultIdeationAssetDir = fileURLToPath(new URL("../storage/ideation", import.meta.url));
 const defaultFavoritesDir = fileURLToPath(new URL("../storage/favorites", import.meta.url));
+const corsAllowOriginsFromEnv = readCsvEnv("CORS_ALLOW_ORIGINS");
+const defaultCorsAllowOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
+  "https://prismflow.duckdns.org",
+  "https://prismflow.146.190.104.148.sslip.io",
+];
+const trustProxy = readBooleanEnv("TRUST_PROXY", true);
+const slowRequestThresholdMs = readIntegerEnv("SLOW_REQUEST_THRESHOLD_MS", 3000, 0);
+const rateLimitEnabled = readBooleanEnv("RATE_LIMIT_ENABLED", true);
+const rateLimitHeavyBurstWindowSec = readIntegerEnv("RATE_LIMIT_HEAVY_BURST_WINDOW_SEC", 10, 1);
+const rateLimitHeavyBurstMax = readIntegerEnv("RATE_LIMIT_HEAVY_BURST_MAX", 2, 1);
+const rateLimitHeavyWindowSec = readIntegerEnv("RATE_LIMIT_HEAVY_WINDOW_SEC", 60, 1);
+const rateLimitHeavyMax = readIntegerEnv("RATE_LIMIT_HEAVY_MAX", 6, 1);
+const rateLimitLightWindowSec = readIntegerEnv("RATE_LIMIT_LIGHT_WINDOW_SEC", 60, 1);
+const rateLimitLightMax = readIntegerEnv("RATE_LIMIT_LIGHT_MAX", 120, 1);
+const rateLimitFavoritesManualWindowSec = readIntegerEnv(
+  "RATE_LIMIT_FAVORITES_MANUAL_WINDOW_SEC",
+  3600,
+  1,
+);
+const rateLimitFavoritesManualMax = readIntegerEnv("RATE_LIMIT_FAVORITES_MANUAL_MAX", 5, 1);
+const favoritesDuplicateWindowSec = readIntegerEnv("FAVORITES_DUPLICATE_WINDOW_SEC", 3600, 1);
+const sessionConcurrencyMax = readIntegerEnv("SESSION_CONCURRENCY_MAX", 1, 1);
 
 export const config = {
   port: Number(process.env.PORT ?? 8787),
+  trustProxy,
+  corsAllowOrigins: corsAllowOriginsFromEnv ?? defaultCorsAllowOrigins,
+  slowRequestThresholdMs,
+  rateLimitEnabled,
+  rateLimitHeavyBurstWindowSec,
+  rateLimitHeavyBurstMax,
+  rateLimitHeavyWindowSec,
+  rateLimitHeavyMax,
+  rateLimitLightWindowSec,
+  rateLimitLightMax,
+  rateLimitFavoritesManualWindowSec,
+  rateLimitFavoritesManualMax,
+  favoritesDuplicateWindowSec,
+  sessionConcurrencyMax,
   openaiApiKey: readEnv("OPENAI_API_KEY"),
   openaiModel: modelFromEnv,
   openaiBaseUrl: readEnv("OPENAI_BASE_URL") ?? "https://api.openai.com/v1",

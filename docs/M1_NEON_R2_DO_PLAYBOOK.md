@@ -162,3 +162,35 @@ ssh root@146.190.104.148 'docker logs --tail 100 prismflow-api'
 1. 网站首页：`https://prismflow.duckdns.org`
 2. API 健康检查：`https://prismflow.duckdns.org/health`
 3. API 就绪检查：`https://prismflow.duckdns.org/ready`
+
+## 11) M4 安全与稳定收口（已落地）
+
+当前默认策略（可在 `apps/api/.env` 调整）：
+
+1. CORS 白名单：只允许指定来源跨域访问。
+2. 请求频控：
+   - 重接口（生成/优化/需求提炼/收藏创建）默认 `10 秒最多 2 次`，且 `60 秒最多 6 次`。
+   - 轻接口（列表/详情/状态查询）默认 `60 秒最多 120 次`。
+   - 收藏页手动发布（`/favorites/new` 与收藏详情页“保存”）默认 `1 小时最多 5 次`。
+   - 超限返回 `429`，并带 `Retry-After`。
+3. 同会话并发保护：
+   - 同一个 `session` 只允许 1 个重任务同时执行。
+   - 并发触发会返回 `409`（提示当前 session 正在处理中）。
+4. 重复内容防刷：
+   - 同一客户端在去重窗口内重复发布相同 GLSL 代码会返回 `409`。
+5. 慢请求日志：
+   - 默认 `>3000ms` 记录 `Slow request detected`。
+6. 日志脱敏：
+   - `Authorization`、`Cookie`、`x-api-key`、`set-cookie` 已做脱敏。
+
+快速验收命令（本地或线上都可）：
+
+```bash
+# 1) CORS（白名单来源应看到 access-control-allow-origin）
+curl -i https://prismflow.duckdns.org/health \
+  -H 'Origin: https://prismflow.duckdns.org'
+
+# 2) CORS（非白名单来源不应返回 access-control-allow-origin）
+curl -i https://prismflow.duckdns.org/health \
+  -H 'Origin: https://evil.example.com'
+```

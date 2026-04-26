@@ -91,6 +91,23 @@ M1 线上部署骨架配置：
 - `S3_FORCE_PATH_STYLE=true|false`
 - `S3_KEY_PREFIX=prismflow`
 
+M4 安全与稳定（默认已开启）：
+
+- `TRUST_PROXY=true`（在反向代理/网关后识别真实客户端 IP）
+- `CORS_ALLOW_ORIGINS=...`（逗号分隔白名单，默认已含本地与 `prismflow.duckdns.org`）
+- `SLOW_REQUEST_THRESHOLD_MS=3000`（超过阈值输出慢请求日志）
+- `RATE_LIMIT_ENABLED=true`
+- `RATE_LIMIT_HEAVY_BURST_WINDOW_SEC=10`
+- `RATE_LIMIT_HEAVY_BURST_MAX=2`
+- `RATE_LIMIT_HEAVY_WINDOW_SEC=60`
+- `RATE_LIMIT_HEAVY_MAX=6`
+- `RATE_LIMIT_LIGHT_WINDOW_SEC=60`
+- `RATE_LIMIT_LIGHT_MAX=120`
+- `RATE_LIMIT_FAVORITES_MANUAL_WINDOW_SEC=3600`（收藏页手动发布窗口，默认 1 小时）
+- `RATE_LIMIT_FAVORITES_MANUAL_MAX=5`（收藏页手动发布上限，默认每小时 5 次）
+- `FAVORITES_DUPLICATE_WINDOW_SEC=3600`（相同代码去重窗口，默认 1 小时）
+- `SESSION_CONCURRENCY_MAX=1`（同一个 session 的重任务串行执行；并发请求返回 `409`）
+
 M1 云接入预检（Neon/R2）：
 
 - `npm --workspace @shader-mvp/api run doctor:cloud`
@@ -150,6 +167,12 @@ M1 前端直连线上 API（当前 DO 测试环境）：
 - WebGL 实时预览使用 WebGL2 优先（`#version 300 es` 包装 + Shadertoy 变量兼容），不支持时回退 WebGL1
 - Revision 版本记录（内存存储）
 - M1 新增依赖就绪探针：`/ready`（包含 app store 与 favorites 存储健康检查）
+- M4 新增可配置 CORS 白名单；非白名单跨域请求不会返回 `Access-Control-Allow-Origin`
+- M4 新增请求频控：高频触发返回 `429`（含 `Retry-After`）
+- M4 新增同会话并发保护：同一个 session 并行重任务返回 `409`
+- M4 新增收藏手动发布限流：默认每小时最多 5 次（生成页星标不受此单独规则影响）
+- M4 新增收藏重复代码防刷：同一客户端在去重窗口内重复发布相同代码会被拒绝
+- M4 新增慢请求告警日志：超过阈值自动记录 `Slow request detected`
 - `.glsl` 导出
 - PBR 管线 stub（接口可用，执行返回未启用）
 
