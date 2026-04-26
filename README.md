@@ -1,5 +1,7 @@
 # PrismFlow User Guide
 
+Try it now: https://prismflow.duckdns.org/
+
 PrismFlow is an online GLSL shader generation and iteration tool.
 You describe a visual idea in plain language, and PrismFlow generates shader code with live preview.
 
