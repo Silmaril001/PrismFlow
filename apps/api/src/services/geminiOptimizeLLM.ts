@@ -29,24 +29,19 @@ export interface GeminiOptimizeResponse {
   latencyMs: number;
 }
 
-interface GeminiPart {
-  text?: string;
-  inline_data?: {
-    mime_type: string;
-    data: string;
-  };
-}
-
-interface GeminiContent {
-  role: "user";
-  parts: GeminiPart[];
-}
-
 interface HttpResponse {
   ok: boolean;
   status: number;
   body: string;
 }
+
+type ChatMessageContentPart =
+  | string
+  | { type?: string; text?: string; content?: unknown };
+
+type OpenAiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
 
 const proxyAgentCache = new Map<string, any>();
 const MAX_CODE_CONTEXT_CHARS = 30_000;
@@ -144,57 +139,42 @@ async function postJson(
   }
 }
 
-function normalizeGeminiBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  if (/\/v1beta$/i.test(trimmed)) {
-    return trimmed;
-  }
-  if (/\/codex\/v1$/i.test(trimmed)) {
-    return trimmed.replace(/\/codex\/v1$/i, "/v1beta");
-  }
-  if (/\/gemini$/i.test(trimmed)) {
-    return `${trimmed}/v1beta`;
-  }
-  return `${trimmed}/v1beta`;
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
 }
 
-function buildEndpoint(model: string): string {
-  const base = normalizeGeminiBaseUrl(config.geminiOptimizeBaseUrl);
-  return `${base}/models/${encodeURIComponent(model)}:generateContent`;
+function buildEndpoint(): string {
+  const base = normalizeBaseUrl(config.openaiBaseUrl);
+  return `${base}/chat/completions`;
 }
 
-function shouldFallback(status: number, body: string): boolean {
-  if (status === 429 || status >= 500) {
-    return true;
-  }
-  return /MODEL_CAPACITY_EXHAUSTED|capacity exhausted|RESOURCE_EXHAUSTED/i.test(body);
-}
-
-function extractGeminiText(responseBody: string): string {
-  const parsed = JSON.parse(responseBody) as {
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{ text?: string; thought?: boolean; thoughtSignature?: string }>;
-      };
-    }>;
-  };
-
-  const parts = parsed.candidates?.[0]?.content?.parts ?? [];
-  const cleanText = parts
-    .filter((part) => !part.thought && !part.thoughtSignature)
-    .map((part) => part.text ?? "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  if (cleanText.length > 0) {
-    return cleanText;
+function extractTextFromMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
   }
 
-  return parts
-    .map((part) => part.text ?? "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const textParts: string[] = [];
+  for (const part of content as ChatMessageContentPart[]) {
+    if (typeof part === "string") {
+      textParts.push(part);
+      continue;
+    }
+    if (part && typeof part === "object") {
+      if (typeof part.text === "string" && part.text.length > 0) {
+        textParts.push(part.text);
+        continue;
+      }
+      if (typeof part.content === "string" && part.content.length > 0) {
+        textParts.push(part.content);
+      }
+    }
+  }
+
+  return textParts.join("\n").trim();
 }
 
 function parseOptimizeJson(rawText: string): { analysis: string; optimizePrompt: string } {
@@ -260,7 +240,7 @@ function runProcess(bin: string, args: string[]): Promise<void> {
   });
 }
 
-async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPart[]> {
+async function extractVideoFramesAsDataUrls(storagePath: string): Promise<string[]> {
   const tempDir = mkdtempSync(join(tmpdir(), "shader-optimize-video-"));
   const outputPattern = join(tempDir, "frame_%03d.jpg");
   const vf = `fps=${config.geminiVideoFrameFps},scale=${config.geminiVideoFrameWidth}:-2`;
@@ -288,12 +268,10 @@ async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPar
       throw new Error("Video frame extraction produced no frames.");
     }
 
-    return frameNames.map((name) => ({
-      inline_data: {
-        mime_type: "image/jpeg",
-        data: readFileSync(join(tempDir, name)).toString("base64"),
-      },
-    }));
+    return frameNames.map((name) => {
+      const base64 = readFileSync(join(tempDir, name)).toString("base64");
+      return `data:image/jpeg;base64,${base64}`;
+    });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Video preprocessing failed: ${reason}`);
@@ -310,15 +288,15 @@ function extensionFromVideoMimeType(mimeType: string): string {
   return ".video";
 }
 
-async function extractVideoFramesAsPartsFromBase64(
+async function extractVideoFramesAsDataUrlsFromBase64(
   mimeType: string,
   dataBase64: string,
-): Promise<GeminiPart[]> {
+): Promise<string[]> {
   const tempDir = mkdtempSync(join(tmpdir(), "shader-optimize-video-input-"));
   const inputPath = join(tempDir, `input${extensionFromVideoMimeType(mimeType)}`);
   try {
     writeFileSync(inputPath, Buffer.from(dataBase64, "base64"));
-    return await extractVideoFramesAsParts(inputPath);
+    return await extractVideoFramesAsDataUrls(inputPath);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -362,136 +340,120 @@ function buildUserText(targetPrompt: string, currentCode: string, userInstructio
   ].join("\n\n");
 }
 
+async function buildUserContent(request: GeminiOptimizeRequest): Promise<OpenAiContentPart[]> {
+  const content: OpenAiContentPart[] = [
+    {
+      type: "text",
+      text: buildUserText(request.targetPrompt, request.currentCode, request.userInstruction),
+    },
+  ];
+
+  const previewImage = parseImageDataUrl(request.previewFrameDataUrl);
+  content.push({
+    type: "image_url",
+    image_url: {
+      url: `data:${previewImage.mimeType};base64,${previewImage.base64}`,
+    },
+  });
+
+  if (!request.ideationAsset) {
+    return content;
+  }
+
+  if (isVideoMimeType(request.ideationAsset.mimeType)) {
+    const frameDataUrls = await extractVideoFramesAsDataUrlsFromBase64(
+      request.ideationAsset.mimeType,
+      request.ideationAsset.dataBase64,
+    );
+    content.push({
+      type: "text",
+      text: `Additional reference: ideation asset is a video. ${frameDataUrls.length} frame(s) were auto-extracted.`,
+    });
+    for (const dataUrl of frameDataUrls) {
+      content.push({
+        type: "image_url",
+        image_url: { url: dataUrl },
+      });
+    }
+    return content;
+  }
+
+  content.push({
+    type: "text",
+    text: "Additional reference: ideation asset is an image.",
+  });
+  content.push({
+    type: "image_url",
+    image_url: {
+      url: `data:${request.ideationAsset.mimeType};base64,${request.ideationAsset.dataBase64}`,
+    },
+  });
+
+  return content;
+}
+
 export async function runGeminiOptimize(
   request: GeminiOptimizeRequest,
 ): Promise<GeminiOptimizeResponse> {
   const startedAt = Date.now();
-  if (!config.geminiApiKey) {
-    throw new Error("GEMINI_API_KEY/OPENAI_API_KEY is missing for optimize flow.");
+  if (!config.openaiApiKey) {
+    throw new Error("OPENAI_API_KEY is missing for optimize flow.");
   }
 
   const systemPrompt = buildOptimizeSystemPrompt();
-  const userParts: GeminiPart[] = [
+  const userContent = await buildUserContent(request);
+  const endpoint = buildEndpoint();
+
+  const response = await postJson(
+    endpoint,
     {
-      text: buildUserText(request.targetPrompt, request.currentCode, request.userInstruction),
-    },
-  ];
-  const previewImage = parseImageDataUrl(request.previewFrameDataUrl);
-  userParts.push({
-    inline_data: {
-      mime_type: previewImage.mimeType,
-      data: previewImage.base64,
-    },
-  });
-
-  if (request.ideationAsset) {
-    if (isVideoMimeType(request.ideationAsset.mimeType)) {
-      const frameParts = await extractVideoFramesAsPartsFromBase64(
-        request.ideationAsset.mimeType,
-        request.ideationAsset.dataBase64,
-      );
-      userParts.push({
-        text: `Additional reference: ideation asset is a video. ${frameParts.length} frame(s) were auto-extracted.`,
-      });
-      userParts.push(...frameParts);
-    } else {
-      userParts.push({
-        text: "Additional reference: ideation asset is an image.",
-      });
-      userParts.push({
-        inline_data: {
-          mime_type: request.ideationAsset.mimeType,
-          data: request.ideationAsset.dataBase64,
-        },
-      });
-    }
-  }
-
-  const contents: GeminiContent[] = [
-    {
-      role: "user",
-      parts: userParts,
-    },
-  ];
-
-  const generationConfig: Record<string, unknown> = {
-    temperature: 0.25,
-  };
-  if (config.geminiMaxOutputTokens > 0) {
-    generationConfig.maxOutputTokens = config.geminiMaxOutputTokens;
-  }
-
-  const payload = {
-    systemInstruction: {
-      parts: [{ text: systemPrompt }],
-    },
-    contents,
-    generationConfig,
-  };
-
-  const requestedModel = config.geminiOptimizeModel;
-  const fallbackModel = config.geminiOptimizeFallbackModel;
-
-  const attempts: Array<{ model: string; timeoutMs: number; isFallback: boolean }> = [
-    {
-      model: requestedModel,
-      timeoutMs: config.geminiOptimizeTimeoutMs,
-      isFallback: false,
-    },
-  ];
-  if (fallbackModel && fallbackModel !== requestedModel) {
-    attempts.push({
-      model: fallbackModel,
-      timeoutMs: config.geminiOptimizeFallbackTimeoutMs,
-      isFallback: true,
-    });
-  }
-
-  let lastError: Error | null = null;
-  for (let i = 0; i < attempts.length; i += 1) {
-    const attempt = attempts[i]!;
-    const endpoint = buildEndpoint(attempt.model);
-    try {
-      const response = await postJson(
-        endpoint,
-        payload,
+      model: config.openaiModel,
+      temperature: 0.25,
+      max_tokens: config.openaiMaxTokens,
+      messages: [
         {
-          "Content-Type": "application/json",
-          "x-goog-api-key": config.geminiApiKey,
+          role: "system",
+          content: systemPrompt,
         },
-        attempt.timeoutMs,
-      );
+        {
+          role: "user",
+          content: userContent,
+        },
+      ],
+    },
+    {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.openaiApiKey}`,
+    },
+    config.openaiTimeoutMs,
+  );
 
-      if (!response.ok) {
-        if (i < attempts.length - 1 && shouldFallback(response.status, response.body)) {
-          continue;
-        }
-        throw new Error(`Gemini optimize request failed (${response.status}): ${response.body}`);
-      }
-
-      const rawText = extractGeminiText(response.body);
-      if (!rawText) {
-        throw new Error("Gemini optimize response did not include text.");
-      }
-
-      const parsed = parseOptimizeJson(rawText);
-      return {
-        analysis: parsed.analysis,
-        optimizePrompt: parsed.optimizePrompt,
-        rawText,
-        requestedModel,
-        effectiveModel: attempt.model,
-        fallbackUsed: attempt.isFallback,
-        latencyMs: Date.now() - startedAt,
-      };
-    } catch (error) {
-      const reason = error instanceof Error ? error : new Error(String(error));
-      lastError = reason;
-      if (i < attempts.length - 1 && /timed out|capacity exhausted|RESOURCE_EXHAUSTED/i.test(reason.message)) {
-        continue;
-      }
-    }
+  if (!response.ok) {
+    throw new Error(`Optimize request failed (${response.status}): ${response.body}`);
   }
 
-  throw new Error(lastError?.message ?? "Gemini optimize request failed.");
+  const data = JSON.parse(response.body) as {
+    model?: string;
+    choices?: Array<{
+      message?: {
+        content?: unknown;
+      };
+    }>;
+  };
+
+  const rawText = extractTextFromMessageContent(data.choices?.[0]?.message?.content);
+  if (!rawText) {
+    throw new Error("Optimize response did not include text.");
+  }
+
+  const parsed = parseOptimizeJson(rawText);
+  return {
+    analysis: parsed.analysis,
+    optimizePrompt: parsed.optimizePrompt,
+    rawText,
+    requestedModel: config.openaiModel,
+    effectiveModel: data.model ?? config.openaiModel,
+    fallbackUsed: false,
+    latencyMs: Date.now() - startedAt,
+  };
 }

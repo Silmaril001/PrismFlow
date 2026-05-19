@@ -16,19 +16,6 @@ interface IdeationAssetInput {
   dataBase64: string;
 }
 
-interface GeminiPart {
-  text?: string;
-  inline_data?: {
-    mime_type: string;
-    data: string;
-  };
-}
-
-interface GeminiContent {
-  role: "user" | "model";
-  parts: GeminiPart[];
-}
-
 export interface GeminiIdeationRequest {
   userMessage: string;
   history: IdeationHistoryMessage[];
@@ -49,6 +36,19 @@ interface HttpResponse {
   ok: boolean;
   status: number;
   body: string;
+}
+
+type ChatMessageContentPart =
+  | string
+  | { type?: string; text?: string; content?: unknown };
+
+type OpenAiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+interface OpenAiChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string | OpenAiContentPart[];
 }
 
 const proxyAgentCache = new Map<string, any>();
@@ -146,72 +146,55 @@ async function postJson(
   }
 }
 
-function normalizeGeminiBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  if (/\/v1beta$/i.test(trimmed)) {
-    return trimmed;
-  }
-  if (/\/codex\/v1$/i.test(trimmed)) {
-    return trimmed.replace(/\/codex\/v1$/i, "/v1beta");
-  }
-  if (/\/gemini$/i.test(trimmed)) {
-    return `${trimmed}/v1beta`;
-  }
-  return `${trimmed}/v1beta`;
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
 }
 
-function buildEndpoint(model: string): string {
-  const base = normalizeGeminiBaseUrl(config.geminiBaseUrl);
-  return `${base}/models/${encodeURIComponent(model)}:generateContent`;
+function buildEndpoint(): string {
+  const base = normalizeBaseUrl(config.openaiBaseUrl);
+  return `${base}/chat/completions`;
 }
 
-function mapHistoryToGeminiContents(history: IdeationHistoryMessage[]): GeminiContent[] {
-  const normalized = history
+function mapHistoryToOpenAiMessages(history: IdeationHistoryMessage[]): OpenAiChatMessage[] {
+  return history
     .slice(-12)
     .filter((item) => item.text.trim().length > 0)
     .map((item) => {
-      const role: "user" | "model" = item.role === "assistant" ? "model" : "user";
+      const role: "user" | "assistant" = item.role === "assistant" ? "assistant" : "user";
       return {
         role,
-        parts: [{ text: item.text }],
+        content: item.text,
       };
     });
-  return normalized;
 }
 
-function shouldFallback(status: number, body: string): boolean {
-  if (status === 429 || status >= 500) {
-    return true;
-  }
-  return /MODEL_CAPACITY_EXHAUSTED|capacity exhausted|RESOURCE_EXHAUSTED/i.test(body);
-}
-
-function extractGeminiText(responseBody: string): string {
-  const parsed = JSON.parse(responseBody) as {
-    candidates?: Array<{
-      content?: {
-        parts?: Array<{ text?: string; thought?: boolean; thoughtSignature?: string }>;
-      };
-    }>;
-  };
-
-  const parts = parsed.candidates?.[0]?.content?.parts ?? [];
-  const cleanText = parts
-    .filter((part) => !part.thought && !part.thoughtSignature)
-    .map((part) => part.text ?? "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  if (cleanText.length > 0) {
-    return cleanText;
+function extractTextFromMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
   }
 
-  // Compatibility fallback for providers that only return text in thought parts.
-  return parts
-    .map((part) => part.text ?? "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const textParts: string[] = [];
+  for (const part of content as ChatMessageContentPart[]) {
+    if (typeof part === "string") {
+      textParts.push(part);
+      continue;
+    }
+    if (part && typeof part === "object") {
+      if (typeof part.text === "string" && part.text.length > 0) {
+        textParts.push(part.text);
+        continue;
+      }
+      if (typeof part.content === "string" && part.content.length > 0) {
+        textParts.push(part.content);
+      }
+    }
+  }
+
+  return textParts.join("\n").trim();
 }
 
 function parseIdeationJson(rawText: string): { analysis: string; glslPrompt: string } {
@@ -276,7 +259,7 @@ function runProcess(bin: string, args: string[]): Promise<void> {
   });
 }
 
-async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPart[]> {
+async function extractVideoFramesAsParts(storagePath: string): Promise<string[]> {
   const tempDir = mkdtempSync(join(tmpdir(), "shader-ideation-video-"));
   const outputPattern = join(tempDir, "frame_%03d.jpg");
   const vf = `fps=${config.geminiVideoFrameFps},scale=${config.geminiVideoFrameWidth}:-2`;
@@ -304,12 +287,10 @@ async function extractVideoFramesAsParts(storagePath: string): Promise<GeminiPar
       throw new Error("Video frame extraction produced no frames.");
     }
 
-    return frameNames.map((name) => ({
-      inline_data: {
-        mime_type: "image/jpeg",
-        data: readFileSync(join(tempDir, name)).toString("base64"),
-      },
-    }));
+    return frameNames.map((name) => {
+      const base64 = readFileSync(join(tempDir, name)).toString("base64");
+      return `data:image/jpeg;base64,${base64}`;
+    });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Video preprocessing failed: ${reason}`);
@@ -326,10 +307,10 @@ function extensionFromVideoMimeType(mimeType: string): string {
   return ".video";
 }
 
-async function extractVideoFramesAsPartsFromBase64(
+async function extractVideoFramesAsDataUrlsFromBase64(
   mimeType: string,
   dataBase64: string,
-): Promise<GeminiPart[]> {
+): Promise<string[]> {
   const tempDir = mkdtempSync(join(tmpdir(), "shader-ideation-video-input-"));
   const inputPath = join(tempDir, `input${extensionFromVideoMimeType(mimeType)}`);
   try {
@@ -340,143 +321,108 @@ async function extractVideoFramesAsPartsFromBase64(
   }
 }
 
-function partToDataUrl(part: GeminiPart): string | null {
-  if (!part.inline_data?.mime_type || !part.inline_data?.data) {
-    return null;
-  }
-  return `data:${part.inline_data.mime_type};base64,${part.inline_data.data}`;
-}
-
 export async function buildLinkedReferenceDataUrls(asset: IdeationAssetInput): Promise<string[]> {
   if (isVideoMimeType(asset.mimeType)) {
-    const parts = await extractVideoFramesAsPartsFromBase64(asset.mimeType, asset.dataBase64);
-    return parts
-      .map(partToDataUrl)
-      .filter((item): item is string => Boolean(item));
+    return extractVideoFramesAsDataUrlsFromBase64(asset.mimeType, asset.dataBase64);
   }
 
   return [`data:${asset.mimeType};base64,${asset.dataBase64}`];
+}
+
+async function buildUserContent(request: GeminiIdeationRequest): Promise<OpenAiContentPart[]> {
+  let userText = request.userMessage.trim() || "Please continue refining the previous request.";
+  const content: OpenAiContentPart[] = [{ type: "text", text: userText }];
+
+  if (!request.asset) {
+    return content;
+  }
+
+  if (isVideoMimeType(request.asset.mimeType)) {
+    const frameDataUrls = await extractVideoFramesAsDataUrlsFromBase64(
+      request.asset.mimeType,
+      request.asset.dataBase64,
+    );
+    userText = `${userText}\n\nAdditional note: input asset is a video. The server auto-extracted ${frameDataUrls.length} key frame(s) at ${config.geminiVideoFrameFps} fps for analysis.`;
+    content[0] = { type: "text", text: userText };
+    for (const dataUrl of frameDataUrls) {
+      content.push({
+        type: "image_url",
+        image_url: { url: dataUrl },
+      });
+    }
+    return content;
+  }
+
+  content.push({
+    type: "image_url",
+    image_url: {
+      url: `data:${request.asset.mimeType};base64,${request.asset.dataBase64}`,
+    },
+  });
+  return content;
 }
 
 export async function runGeminiIdeation(
   request: GeminiIdeationRequest,
 ): Promise<GeminiIdeationResponse> {
   const startedAt = Date.now();
-  if (!config.geminiApiKey) {
-    throw new Error("GEMINI_API_KEY/OPENAI_API_KEY is missing for ideation flow.");
+  if (!config.openaiApiKey) {
+    throw new Error("OPENAI_API_KEY is missing for ideation flow.");
   }
 
   const systemPrompt = buildIdeationSystemPrompt();
-  const contents = mapHistoryToGeminiContents(request.history);
-  const userParts: GeminiPart[] = [
-    { text: request.userMessage.trim() || "Please continue refining the previous request." },
-  ];
-  const isVideoAsset = Boolean(request.asset && isVideoMimeType(request.asset.mimeType));
+  const userContent = await buildUserContent(request);
+  const endpoint = buildEndpoint();
 
-  if (request.asset) {
-    if (isVideoAsset) {
-      const frameParts = await extractVideoFramesAsPartsFromBase64(
-        request.asset.mimeType,
-        request.asset.dataBase64,
-      );
-      userParts.push({
-        text: `Additional note: input asset is a video. The server auto-extracted ${frameParts.length} key frame(s) at ${config.geminiVideoFrameFps} fps for analysis.`,
-      });
-      userParts.push(...frameParts);
-    } else {
-      userParts.push({
-        inline_data: {
-          mime_type: request.asset.mimeType,
-          data: request.asset.dataBase64,
-        },
-      });
-    }
-  }
-
-  contents.push({
-    role: "user",
-    parts: userParts,
-  });
-
-  const generationConfig: Record<string, unknown> = {
-    temperature: 0.35,
-  };
-  if (config.geminiMaxOutputTokens > 0) {
-    generationConfig.maxOutputTokens = config.geminiMaxOutputTokens;
-  }
-
-  const payload = {
-    systemInstruction: {
-      parts: [{ text: systemPrompt }],
-    },
-    contents,
-    generationConfig,
-  };
-
-  const requestedModel = isVideoAsset ? config.geminiVideoModel : config.geminiModel;
-  const fallbackModel = isVideoAsset
-    ? config.geminiVideoFallbackModel
-    : config.geminiFallbackModel;
-
-  const attempts: Array<{ model: string; timeoutMs: number; isFallback: boolean }> = [
+  const messages: OpenAiChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...mapHistoryToOpenAiMessages(request.history),
     {
-      model: requestedModel,
-      timeoutMs: config.geminiTimeoutMs,
-      isFallback: false,
+      role: "user",
+      content: userContent,
     },
   ];
-  if (fallbackModel && fallbackModel !== requestedModel) {
-    attempts.push({
-      model: fallbackModel,
-      timeoutMs: config.geminiFallbackTimeoutMs,
-      isFallback: true,
-    });
+
+  const response = await postJson(
+    endpoint,
+    {
+      model: config.openaiModel,
+      temperature: 0.35,
+      max_tokens: config.openaiMaxTokens,
+      messages,
+    },
+    {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.openaiApiKey}`,
+    },
+    config.openaiTimeoutMs,
+  );
+
+  if (!response.ok) {
+    throw new Error(`Ideation request failed (${response.status}): ${response.body}`);
   }
 
-  let lastError: Error | null = null;
-  for (let i = 0; i < attempts.length; i += 1) {
-    const attempt = attempts[i]!;
-    const endpoint = buildEndpoint(attempt.model);
-    try {
-      const response = await postJson(
-        endpoint,
-        payload,
-        {
-          "Content-Type": "application/json",
-          "x-goog-api-key": config.geminiApiKey,
-        },
-        attempt.timeoutMs,
-      );
-
-      if (!response.ok) {
-        if (i < attempts.length - 1 && shouldFallback(response.status, response.body)) {
-          continue;
-        }
-        throw new Error(`Gemini request failed (${response.status}): ${response.body}`);
-      }
-
-      const rawText = extractGeminiText(response.body);
-      if (!rawText) {
-        throw new Error("Gemini response did not include text.");
-      }
-      const parsed = parseIdeationJson(rawText);
-      return {
-        analysis: parsed.analysis,
-        glslPrompt: parsed.glslPrompt,
-        rawText,
-        requestedModel,
-        effectiveModel: attempt.model,
-        fallbackUsed: attempt.isFallback,
-        latencyMs: Date.now() - startedAt,
+  const data = JSON.parse(response.body) as {
+    model?: string;
+    choices?: Array<{
+      message?: {
+        content?: unknown;
       };
-    } catch (error) {
-      const reason = error instanceof Error ? error : new Error(String(error));
-      lastError = reason;
-      if (i < attempts.length - 1 && /timed out|capacity exhausted|RESOURCE_EXHAUSTED/i.test(reason.message)) {
-        continue;
-      }
-    }
+    }>;
+  };
+  const rawText = extractTextFromMessageContent(data.choices?.[0]?.message?.content);
+  if (!rawText) {
+    throw new Error("Ideation response did not include text.");
   }
 
-  throw new Error(lastError?.message ?? "Gemini ideation request failed.");
+  const parsed = parseIdeationJson(rawText);
+  return {
+    analysis: parsed.analysis,
+    glslPrompt: parsed.glslPrompt,
+    rawText,
+    requestedModel: config.openaiModel,
+    effectiveModel: data.model ?? config.openaiModel,
+    fallbackUsed: false,
+    latencyMs: Date.now() - startedAt,
+  };
 }
